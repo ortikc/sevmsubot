@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:390px;height:844px;overflow:hidden;background:#0A1430;color:#EAF0FF;font-family:'Golos Text',system-ui,sans-serif}
+.mono{font-family:'JetBrains Mono',monospace;font-variant-numeric:tabular-nums}
+.top{display:flex;align-items:center;gap:12px;padding:20px 20px 0}
+.ava{width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,#5E7BC4,#2A3F7A);display:grid;place-items:center;font-weight:600}
+.who b{display:block;font-size:16px;font-weight:600}
+.who span{font-size:13px;color:#8FA2D1}
+.date{padding:22px 20px 0;font-size:13px;color:#8FA2D1;letter-spacing:.02em}
+.date b{color:#EAF0FF;font-size:26px;font-weight:700;display:block;letter-spacing:-.01em;margin-top:2px}
+.beam{margin:18px 20px 0;position:relative;height:44px}
+.track{position:absolute;inset:16px 0 auto;height:12px;border-radius:6px;background:#13234D}
+.lit{position:absolute;top:16px;height:12px;border-radius:3px;background:#3A5296}
+.lit.on{background:#FFD27A;box-shadow:0 0 18px rgba(255,210,122,.45)}
+.now{position:absolute;top:8px;width:2px;height:28px;background:#EAF0FF;border-radius:1px}
+.ticks{position:absolute;top:34px;left:0;right:0;display:flex;justify-content:space-between;font-size:10px;color:#6A7DB0}
+.card{margin:22px 16px 0;padding:18px 18px 16px;border-radius:18px;background:#13234D;border:1px solid #2A3F7A}
+.k{font-size:12px;color:#FFD27A;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.card h2{font-size:22px;font-weight:600;line-height:1.2;margin-top:8px}
+.meta{display:flex;gap:18px;margin-top:14px;font-size:14px;color:#B9C6EA}
+.meta b{display:block;font-size:20px;color:#EAF0FF;font-weight:600}
+.left{margin-top:14px;font-size:13px;color:#8FA2D1}
+.list{margin:18px 16px 0}
+.row{display:grid;grid-template-columns:56px 1fr;gap:12px;padding:12px 4px;border-top:1px solid #1B2D5E}
+.row .t{font-size:13px;color:#8FA2D1;line-height:1.4}
+.row h3{font-size:16px;font-weight:500}
+.row p{font-size:13px;color:#8FA2D1;margin-top:2px}
+.week{position:absolute;bottom:0;left:0;right:0;display:flex;justify-content:space-around;padding:12px 8px 26px;background:#0A1430;border-top:1px solid #1B2D5E}
+.d{text-align:center;font-size:12px;color:#8FA2D1;width:44px;padding:6px 0;border-radius:12px}
+.d b{display:block;font-size:17px;color:#EAF0FF;font-weight:600;margin:2px 0 5px}
+.d i{display:flex;gap:3px;justify-content:center;height:4px}
+.d i s{width:4px;height:4px;border-radius:2px;background:#3A5296}
+.d.sel{background:#1B2D5E}.d.sel i s{background:#FFD27A}
+</style></head><body>
+<div class="top"><div class="ava">АК</div><div class="who"><b>Анна Ковалёва</b><span>ПМ-101 · 1 курс</span></div></div>
+<div class="date">Среда<b>21 октября</b></div>
+<div class="beam">
+  <div class="track"></div>
+  <div class="lit on" style="left:0;width:21%"></div>
+  <div class="lit" style="left:23.3%;width:21%"></div>
+  <div class="lit" style="left:56.6%;width:21%"></div>
+  <div class="lit" style="left:79%;width:21%"></div>
+  <div class="now" style="left:13.5%"></div>
+  <div class="ticks mono"><span>9:00</span><span>12:10</span><span>16:05</span></div>
+</div>
+<div class="card">
+  <div class="k">Идёт сейчас · 1 пара</div>
+  <h2>Математический анализ</h2>
+  <div class="meta"><div>Аудитория<b class="mono">172</b></div><div>Время<b class="mono">9:00–10:30</b></div></div>
+  <div class="left">Семинар · Лактионова Н. В. · ещё <span class="mono">18 мин</span></div>
+</div>
+<div class="list">
+  <div class="row"><div class="t mono">10:40<br>12:10</div><div><h3>Математический анализ</h3><p>Семинар · ауд. 172</p></div></div>
+  <div class="row"><div class="t mono">12:55<br>14:25</div><div><h3>История России</h3><p>Семинар · ауд. 205 · Белый К. В.</p></div></div>
+  <div class="row"><div class="t mono">14:35<br>16:05</div><div><h3>История России</h3><p>Семинар · ауд. 205</p></div></div>
+</div>
+<div class="week">
+  <div class="d">Пн<b>19</b><i><s></s><s></s></i></div>
+  <div class="d">Вт<b>20</b><i><s></s><s></s><s></s><s></s></i></div>
+  <div class="d sel">Ср<b>21</b><i><s></s><s></s><s></s><s></s></i></div>
+  <div class="d">Чт<b>22</b><i><s></s><s></s><s></s><s></s></i></div>
+  <div class="d">Пт<b>23</b><i><s></s><s></s><s></s><s></s></i></div>
+  <div class="d">Сб<b>24</b><i><s></s><s></s></i></div>
+</div>
+</body></html>

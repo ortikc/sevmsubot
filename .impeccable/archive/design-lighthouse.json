@@ -1,0 +1,497 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-21T10:31:55.821Z",
+  "title": "Design System: Расписание МГУ Севастополь",
+  "extensions": {
+    "colorMeta": {
+      "lamp": {
+        "role": "primary",
+        "displayName": "Lamp Amber",
+        "canonical": "#FFD27A",
+        "oklch": "oklch(88.5% 0.118 82.9)",
+        "tonalRamp": [
+          "#321D00",
+          "#4F3500",
+          "#6D500C",
+          "#8C6C27",
+          "#AD8940",
+          "#CFA858",
+          "#FFD27A",
+          "#FFE894"
+        ]
+      },
+      "lamp-ink": {
+        "role": "primary",
+        "displayName": "Lamp Ink",
+        "canonical": "#2A1E05",
+        "oklch": "oklch(24.4% 0.043 83.1)",
+        "tonalRamp": [
+          "#321D00",
+          "#4F3500",
+          "#6D500C",
+          "#8C6C27",
+          "#AD8940",
+          "#CFA858",
+          "#FFD27A",
+          "#FFE894"
+        ]
+      },
+      "sea-0": {
+        "role": "neutral",
+        "displayName": "Abyss",
+        "canonical": "#071026",
+        "oklch": "oklch(17.9% 0.047 264.8)",
+        "tonalRamp": [
+          "#071026",
+          "#12224B",
+          "#1A2C5C",
+          "#253A75",
+          "#36508F",
+          "#8FA2D1",
+          "#BAC7EB",
+          "#EAF0FF"
+        ]
+      },
+      "sea-1": {
+        "role": "neutral",
+        "displayName": "Night Sea",
+        "canonical": "#0A1430",
+        "oklch": "oklch(20.1% 0.058 266.5)",
+        "tonalRamp": [
+          "#071026",
+          "#12224B",
+          "#1A2C5C",
+          "#253A75",
+          "#36508F",
+          "#8FA2D1",
+          "#BAC7EB",
+          "#EAF0FF"
+        ]
+      },
+      "sea-2": {
+        "role": "neutral",
+        "displayName": "Deep Water",
+        "canonical": "#12224B",
+        "oklch": "oklch(26.4% 0.079 265.3)",
+        "tonalRamp": [
+          "#071026",
+          "#12224B",
+          "#1A2C5C",
+          "#253A75",
+          "#36508F",
+          "#8FA2D1",
+          "#BAC7EB",
+          "#EAF0FF"
+        ]
+      },
+      "sea-3": {
+        "role": "neutral",
+        "displayName": "Swell",
+        "canonical": "#1A2C5C",
+        "oklch": "oklch(30.7% 0.089 265.9)",
+        "tonalRamp": [
+          "#071026",
+          "#12224B",
+          "#1A2C5C",
+          "#253A75",
+          "#36508F",
+          "#8FA2D1",
+          "#BAC7EB",
+          "#EAF0FF"
+        ]
+      },
+      "sea-4": {
+        "role": "neutral",
+        "displayName": "Harbour Navy",
+        "canonical": "#253A75",
+        "oklch": "oklch(36.6% 0.105 266.5)",
+        "tonalRamp": [
+          "#071026",
+          "#12224B",
+          "#1A2C5C",
+          "#253A75",
+          "#36508F",
+          "#8FA2D1",
+          "#BAC7EB",
+          "#EAF0FF"
+        ]
+      },
+      "sea-5": {
+        "role": "neutral",
+        "displayName": "Unlit Navy",
+        "canonical": "#36508F",
+        "oklch": "oklch(44.3% 0.108 265.4)",
+        "tonalRamp": [
+          "#071026",
+          "#12224B",
+          "#1A2C5C",
+          "#253A75",
+          "#36508F",
+          "#8FA2D1",
+          "#BAC7EB",
+          "#EAF0FF"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Porcelain",
+        "canonical": "#EAF0FF",
+        "oklch": "oklch(95.5% 0.021 268.4)",
+        "tonalRamp": [
+          "#071026",
+          "#12224B",
+          "#1A2C5C",
+          "#253A75",
+          "#36508F",
+          "#8FA2D1",
+          "#BAC7EB",
+          "#EAF0FF"
+        ]
+      },
+      "ink-2": {
+        "role": "neutral",
+        "displayName": "Mist",
+        "canonical": "#BAC7EB",
+        "oklch": "oklch(83.2% 0.053 269.6)",
+        "tonalRamp": [
+          "#071026",
+          "#12224B",
+          "#1A2C5C",
+          "#253A75",
+          "#36508F",
+          "#8FA2D1",
+          "#BAC7EB",
+          "#EAF0FF"
+        ]
+      },
+      "ink-3": {
+        "role": "neutral",
+        "displayName": "Fog",
+        "canonical": "#8FA2D1",
+        "oklch": "oklch(71.5% 0.072 267.5)",
+        "tonalRamp": [
+          "#071026",
+          "#12224B",
+          "#1A2C5C",
+          "#253A75",
+          "#36508F",
+          "#8FA2D1",
+          "#BAC7EB",
+          "#EAF0FF"
+        ]
+      },
+      "alert": {
+        "role": "status",
+        "displayName": "Coral Signal",
+        "canonical": "#FF9C8F",
+        "oklch": "oklch(79.1% 0.121 28.1)",
+        "tonalRamp": [
+          "#410C09",
+          "#61251F",
+          "#823E36",
+          "#A5584F",
+          "#CA7469",
+          "#FF9C8F",
+          "#FFB3A6",
+          "#FFD3C5"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Onboarding questions."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "The lit pair's subject in the lamp card."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "The day heading; the profile sheet name at 700."
+      },
+      "title-sm": {
+        "displayName": "Title Small",
+        "purpose": "Pair subjects in the list."
+      },
+      "body-lg": {
+        "displayName": "Body Large",
+        "purpose": "Text input value (no iOS focus zoom); empty-state headings at 600."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Base size; choice rows; header name at 600."
+      },
+      "lead": {
+        "displayName": "Lead",
+        "purpose": "Onboarding leads, empty and error explanations, profile rows; 30-34ch."
+      },
+      "body-sm": {
+        "displayName": "Body Small",
+        "purpose": "Day summary, teacher line, status line, onboarding summary."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Meta lines, field labels, help, week label, onboarding group headings, break rows."
+      },
+      "caption": {
+        "displayName": "Caption",
+        "purpose": "Fact labels, source line, weekday abbreviations, the word under course numerals."
+      },
+      "button": {
+        "displayName": "Button",
+        "purpose": "Button labels."
+      },
+      "figure-xl": {
+        "displayName": "Figure XL",
+        "purpose": "Course numerals in onboarding."
+      },
+      "figure": {
+        "displayName": "Figure",
+        "purpose": "Room and time in the lamp card."
+      },
+      "figure-day": {
+        "displayName": "Figure Day",
+        "purpose": "Date numerals in the week strip."
+      },
+      "figure-sm": {
+        "displayName": "Figure Small",
+        "purpose": "The list's time column; 12px in break rows, 11px on the strip axis."
+      }
+    },
+    "shadows": [
+      {
+        "name": "sheet-lift",
+        "value": "0 -12px 40px rgba(0, 0, 0, 0.35)",
+        "purpose": "The profile bottom sheet only; the single lifted layer."
+      },
+      {
+        "name": "sheet-scrim",
+        "value": "rgba(4, 9, 24, 0.6)",
+        "purpose": "Backdrop under the bottom sheet (background, fades in over 240ms)."
+      },
+      {
+        "name": "lamp-beam",
+        "value": "0 0 10px 2px rgba(255, 170, 60, 0.7)",
+        "purpose": "Glow on the running pair's flash only; opacity breathes on a 4s loop, static at 0.6 under reduced motion. The declared --lamp-glow token is not used by the build."
+      },
+      {
+        "name": "selection-ring",
+        "value": "inset 0 0 0 2px var(--lamp)",
+        "purpose": "Selected choice row, selected course tile, focused input."
+      },
+      {
+        "name": "resting-ring",
+        "value": "inset 0 0 0 1px var(--sea-4)",
+        "purpose": "Text input at rest."
+      },
+      {
+        "name": "focus-outline",
+        "value": "outline: 2px solid var(--lamp); outline-offset: 3px; border-radius: 6px",
+        "purpose": "Every :focus-visible element."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-out",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "The only custom easing (--ease-out); all transitions and entrances."
+      },
+      {
+        "name": "press",
+        "value": "160ms ease-out; scale(0.985), tiles scale(0.97)",
+        "purpose": "Touch press feedback on buttons, choice rows, course tiles; input ring change."
+      },
+      {
+        "name": "day-select",
+        "value": "200ms ease-out background-color",
+        "purpose": "Week strip day tab selection."
+      },
+      {
+        "name": "scrim-fade",
+        "value": "240ms ease-out",
+        "purpose": "Bottom sheet scrim fade-in."
+      },
+      {
+        "name": "progress",
+        "value": "300ms ease-out background-color",
+        "purpose": "Onboarding progress segments lighting up."
+      },
+      {
+        "name": "enter",
+        "value": "380ms ease-out",
+        "purpose": "Bottom sheet slide-up from translateY(100%); onboarding body rise."
+      },
+      {
+        "name": "card-rise",
+        "value": "480ms ease-out, 120ms delay, from translateY(8px) + opacity 0",
+        "purpose": "Lamp card entrance."
+      },
+      {
+        "name": "flash-in",
+        "value": "520ms ease-out, 70ms stagger per segment, from scaleX(0.4) + opacity 0",
+        "purpose": "Light strip segments flashing in left to right."
+      },
+      {
+        "name": "beam",
+        "value": "4s ease-in-out infinite, 600ms delay; opacity 0 -> 1 (45%) -> 0.2 (60%) -> 0",
+        "purpose": "The running pair's glow breathing."
+      },
+      {
+        "name": "beacon",
+        "value": "2.4s ease-in-out infinite; opacity 0.25 -> 1 (40%)",
+        "purpose": "Loading dot."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "all animation and transition durations 1ms, one iteration",
+        "purpose": "prefers-reduced-motion: everything still; lit glow held at 0.6 opacity."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "column-clamp",
+        "value": "560px",
+        "purpose": "At min-width 560px the app column, week strip and sheet clamp to max-width 520px, centred."
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Porcelain bar for the one action on a screen, pinned at the bottom; disabled while saving.",
+      "html": "<div class=\"ds-btn-primary-ground\"><button class=\"ds-btn-primary\">Готово</button><button class=\"ds-btn-primary\" disabled>Сохраняем…</button></div>",
+      "css": ".ds-btn-primary-ground { display: grid; gap: 12px; padding: 20px; background: var(--sea-1, #0A1430); } .ds-btn-primary { width: 100%; height: 54px; border: 0; border-radius: var(--r, 14px); background: var(--ink, #EAF0FF); color: var(--sea-1, #0A1430); font-family: var(--font, \"Golos Text\", system-ui, sans-serif); font-size: 16px; font-weight: 600; cursor: pointer; transition: transform 160ms cubic-bezier(0.16, 1, 0.3, 1), opacity 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-btn-primary:active { transform: scale(0.985); } .ds-btn-primary:focus-visible { outline: 2px solid var(--lamp, #FFD27A); outline-offset: 3px; } .ds-btn-primary:disabled { opacity: 0.4; cursor: default; transform: none; }"
+    },
+    {
+      "name": "Quiet Button",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "Secondary action on Swell, e.g. editing profile data in the sheet.",
+      "html": "<div class=\"ds-btn-quiet-ground\"><button class=\"ds-btn-quiet\">Изменить данные</button></div>",
+      "css": ".ds-btn-quiet-ground { padding: 20px; background: var(--sea-1, #0A1430); } .ds-btn-quiet { width: 100%; height: 54px; border: 0; border-radius: var(--r, 14px); background: var(--sea-3, #1A2C5C); color: var(--ink, #EAF0FF); font-family: var(--font, \"Golos Text\", system-ui, sans-serif); font-size: 16px; font-weight: 600; cursor: pointer; transition: transform 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-btn-quiet:active { transform: scale(0.985); } .ds-btn-quiet:focus-visible { outline: 2px solid var(--lamp, #FFD27A); outline-offset: 3px; }"
+    },
+    {
+      "name": "Choice Row",
+      "kind": "chip",
+      "refersTo": "choice-item",
+      "description": "Onboarding picker row for direction or group; selected state is Swell with an inset amber ring.",
+      "html": "<ul class=\"ds-choice-list\"><li><button class=\"ds-choice\" aria-pressed=\"false\"><span>Прикладная математика и информатика</span><svg width=\"20\" height=\"20\" viewBox=\"0 0 20 20\" fill=\"none\" aria-hidden=\"true\"><path d=\"M7.5 4.5 13 10l-5.5 5.5\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg></button></li><li><button class=\"ds-choice\" aria-pressed=\"true\"><span class=\"ds-choice-num\">ПМ-101</span><svg width=\"20\" height=\"20\" viewBox=\"0 0 20 20\" fill=\"none\" aria-hidden=\"true\"><path d=\"M7.5 4.5 13 10l-5.5 5.5\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg></button></li><li><button class=\"ds-choice\" aria-pressed=\"false\"><span class=\"ds-choice-num\">ПМ-102</span><svg width=\"20\" height=\"20\" viewBox=\"0 0 20 20\" fill=\"none\" aria-hidden=\"true\"><path d=\"M7.5 4.5 13 10l-5.5 5.5\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg></button></li></ul>",
+      "css": ".ds-choice-list { list-style: none; margin: 0; padding: 20px; background: var(--sea-1, #0A1430); } .ds-choice { width: 100%; min-height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; margin-bottom: 8px; border: 0; border-radius: var(--r, 14px); background: var(--sea-2, #12224B); color: var(--ink, #EAF0FF); font-family: var(--font, \"Golos Text\", system-ui, sans-serif); font-size: 16px; line-height: 1.3; text-align: left; cursor: pointer; transition: background-color 160ms cubic-bezier(0.16, 1, 0.3, 1), transform 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-choice svg { flex: none; } .ds-choice:active { background: var(--sea-3, #1A2C5C); transform: scale(0.985); } .ds-choice[aria-pressed=\"true\"] { background: var(--sea-3, #1A2C5C); box-shadow: inset 0 0 0 2px var(--lamp, #FFD27A); } .ds-choice:focus-visible { outline: 2px solid var(--lamp, #FFD27A); outline-offset: 3px; } .ds-choice-num { font-family: var(--mono, \"JetBrains Mono\", ui-monospace, monospace); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }"
+    },
+    {
+      "name": "Course Tiles",
+      "kind": "chip",
+      "refersTo": "course-tile",
+      "description": "Auto-fill grid of course numerals in mono; selected tile is Swell with the amber ring.",
+      "html": "<div class=\"ds-courses\"><button class=\"ds-course\" aria-pressed=\"false\" aria-label=\"1 курс\"><b>1</b><span>курс</span></button><button class=\"ds-course\" aria-pressed=\"true\" aria-label=\"2 курс\"><b>2</b><span>курс</span></button><button class=\"ds-course\" aria-pressed=\"false\" aria-label=\"3 курс\"><b>3</b><span>курс</span></button><button class=\"ds-course\" aria-pressed=\"false\" aria-label=\"4 курс\"><b>4</b><span>курс</span></button></div>",
+      "css": ".ds-courses { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 10px; padding: 20px; background: var(--sea-1, #0A1430); } .ds-course { height: 76px; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 0; border-radius: var(--r, 14px); background: var(--sea-2, #12224B); color: var(--ink, #EAF0FF); font-family: var(--font, \"Golos Text\", system-ui, sans-serif); cursor: pointer; transition: background-color 160ms cubic-bezier(0.16, 1, 0.3, 1), transform 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-course b { font-family: var(--mono, \"JetBrains Mono\", ui-monospace, monospace); font-size: 28px; font-weight: 600; line-height: 1; } .ds-course span { margin-top: 5px; font-size: 12px; color: var(--ink-3, #8FA2D1); } .ds-course:active { background: var(--sea-3, #1A2C5C); transform: scale(0.97); } .ds-course[aria-pressed=\"true\"] { background: var(--sea-3, #1A2C5C); box-shadow: inset 0 0 0 2px var(--lamp, #FFD27A); } .ds-course:focus-visible { outline: 2px solid var(--lamp, #FFD27A); outline-offset: 3px; }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input-field",
+      "description": "Label above, 54px Deep Water field with a 1px Harbour Navy ring that turns 2px amber on focus; error as Coral Signal text.",
+      "html": "<div class=\"ds-field\"><label for=\"ds-field-name\">Имя и фамилия</label><input id=\"ds-field-name\" class=\"ds-field-input\" placeholder=\"Например, Анна Ковалёва\"><p class=\"ds-field-err\">Напишите имя, хотя бы две буквы.</p></div>",
+      "css": ".ds-field { padding: 20px; background: var(--sea-1, #0A1430); font-family: var(--font, \"Golos Text\", system-ui, sans-serif); } .ds-field label { display: block; margin-bottom: 8px; font-size: 13px; color: var(--ink-3, #8FA2D1); } .ds-field-input { width: 100%; box-sizing: border-box; height: 54px; padding: 0 16px; border: 0; border-radius: var(--r, 14px); background: var(--sea-2, #12224B); color: var(--ink, #EAF0FF); caret-color: var(--lamp, #FFD27A); font-family: var(--font, \"Golos Text\", system-ui, sans-serif); font-size: 17px; box-shadow: inset 0 0 0 1px var(--sea-4, #253A75); outline: none; transition: box-shadow 160ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-field-input::placeholder { color: var(--ink-3, #8FA2D1); } .ds-field-input:focus { box-shadow: inset 0 0 0 2px var(--lamp, #FFD27A); } .ds-field-err { margin: 8px 0 0; font-size: 13px; color: var(--alert, #FF9C8F); }"
+    },
+    {
+      "name": "Light Strip",
+      "kind": "custom",
+      "refersTo": "light-track",
+      "description": "The day's light characteristic: pairs as flashes sized by real duration on a 9:00-16:05 axis; past Harbour Navy, upcoming Unlit Navy, running pair amber with the beam; Porcelain now-marker.",
+      "html": "<div class=\"ds-light-ground\"><div class=\"ds-light\" role=\"img\" aria-label=\"Пары с 9:00–16:05\"><span class=\"ds-light-track\"></span><span class=\"ds-flash ds-flash-past\" style=\"left:0%;width:21.18%\"></span><span class=\"ds-flash ds-flash-lit\" style=\"left:23.53%;width:21.18%\"></span><span class=\"ds-flash\" style=\"left:55.29%;width:21.18%\"></span><span class=\"ds-flash\" style=\"left:78.82%;width:21.18%\"></span><span class=\"ds-now\" style=\"left:30.59%\"></span><span class=\"ds-light-ticks\"><span>9:00</span><span>16:05</span></span></div></div>",
+      "css": ".ds-light-ground { padding: 20px; background: var(--sea-1, #0A1430); } .ds-light { position: relative; height: 38px; } .ds-light-track { position: absolute; left: 0; right: 0; top: 6px; height: 12px; border-radius: 6px; background: var(--sea-2, #12224B); } .ds-flash { position: absolute; top: 6px; height: 12px; border-radius: 3px; background: var(--sea-5, #36508F); } .ds-flash-past { background: var(--sea-4, #253A75); } .ds-flash-lit { background: var(--lamp, #FFD27A); } .ds-flash-lit::after { content: \"\"; position: absolute; inset: 0; border-radius: 3px; box-shadow: 0 0 10px 2px rgba(255, 170, 60, 0.7); opacity: 0; animation: ds-beam 4s ease-in-out 600ms infinite; } @keyframes ds-beam { 0%, 100% { opacity: 0; } 45% { opacity: 1; } 60% { opacity: 0.2; } } .ds-now { position: absolute; top: 0; width: 2px; height: 24px; margin-left: -1px; border-radius: 1px; background: var(--ink, #EAF0FF); } .ds-light-ticks { position: absolute; left: 0; right: 0; top: 24px; display: flex; justify-content: space-between; font-family: var(--mono, \"JetBrains Mono\", ui-monospace, monospace); font-size: 11px; letter-spacing: -0.01em; color: var(--ink-3, #8FA2D1); } @media (prefers-reduced-motion: reduce) { .ds-flash-lit::after { animation: none; opacity: 0.6; } }"
+    },
+    {
+      "name": "Lamp Card",
+      "kind": "card",
+      "refersTo": "lamp-card",
+      "description": "The pair the lamp shines on today: subject, kind and teacher, mono room and time, and an amber-dot status line.",
+      "html": "<div class=\"ds-lamp-ground\"><article class=\"ds-lamp-card\"><h2>Математический анализ</h2><p class=\"ds-lamp-teacher\">Семинар · Иванова Анна Петровна</p><div class=\"ds-lamp-facts\"><div><span>Аудитория</span><b>172</b></div><div><span>Время</span><b>10:40–12:10</b></div></div><p class=\"ds-lamp-status\"><span class=\"ds-lamp-dot\"></span><span>Идёт 2 пара · осталось <b>1 ч 10 мин</b></span></p></article></div>",
+      "css": ".ds-lamp-ground { padding: 20px 16px; background: var(--sea-1, #0A1430); } .ds-lamp-card { padding: 18px 18px 16px; border-radius: 16px; background: var(--sea-2, #12224B); color: var(--ink, #EAF0FF); font-family: var(--font, \"Golos Text\", system-ui, sans-serif); } .ds-lamp-card h2 { margin: 0; font-size: 26px; font-weight: 700; line-height: 1.2; letter-spacing: -0.015em; text-wrap: balance; } .ds-lamp-teacher { margin: 6px 0 0; font-size: 14px; color: var(--ink-2, #BAC7EB); } .ds-lamp-facts { display: flex; gap: 28px; margin-top: 16px; } .ds-lamp-facts span { display: block; font-size: 12px; color: var(--ink-3, #8FA2D1); } .ds-lamp-facts b { display: block; margin-top: 2px; font-family: var(--mono, \"JetBrains Mono\", ui-monospace, monospace); font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; } .ds-lamp-status { display: flex; align-items: center; gap: 10px; margin: 16px 0 0; padding-top: 14px; border-top: 1px solid var(--sea-3, #1A2C5C); font-size: 14px; color: var(--ink, #EAF0FF); } .ds-lamp-status b { font-weight: 600; font-variant-numeric: tabular-nums; } .ds-lamp-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--lamp, #FFD27A); }"
+    },
+    {
+      "name": "Pair List",
+      "kind": "custom",
+      "refersTo": "pair-row",
+      "description": "Time-column list: mono start/end beside subject and meta; breaks of 30+ minutes as their own row; past pairs recede.",
+      "html": "<ul class=\"ds-pairs\"><li class=\"ds-pair ds-pair-past\"><div class=\"ds-pair-t\">9:00<br>10:30</div><div><h3>Математический анализ</h3><p>Семинар · <span class=\"ds-pair-room\">ауд. <span class=\"ds-num\">172</span></span> · Иванова А. П.</p></div></li><li class=\"ds-gap\"><div class=\"ds-pair-t\">12:10<br>12:55</div><div>Перерыв 45 мин</div></li><li class=\"ds-pair\"><div class=\"ds-pair-t\">12:55<br>14:25</div><div><h3>История России</h3><p>Семинар · <span class=\"ds-pair-room\">ауд. <span class=\"ds-num\">205</span></span> · Петров К. В.</p></div></li></ul>",
+      "css": ".ds-pairs { list-style: none; margin: 0; padding: 12px 16px; background: var(--sea-1, #0A1430); color: var(--ink, #EAF0FF); font-family: var(--font, \"Golos Text\", system-ui, sans-serif); } .ds-pair, .ds-gap { display: grid; grid-template-columns: 52px 1fr; gap: 14px; border-top: 1px solid var(--sea-2, #12224B); } .ds-pair { padding: 13px 4px; } .ds-pair:first-child { border-top: 0; } .ds-gap { align-items: center; padding: 10px 4px; font-size: 13px; color: var(--ink-3, #8FA2D1); } .ds-gap + .ds-pair { border-top: 0; } .ds-pair-t { font-family: var(--mono, \"JetBrains Mono\", ui-monospace, monospace); font-size: 13px; line-height: 1.45; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; color: var(--ink-3, #8FA2D1); } .ds-gap .ds-pair-t { font-size: 12px; color: #7387BA; } .ds-pair h3 { margin: 0; font-size: 16px; font-weight: 500; line-height: 1.3; } .ds-pair p { margin: 3px 0 0; font-size: 13px; color: var(--ink-3, #8FA2D1); } .ds-pair-room { color: var(--ink-2, #BAC7EB); } .ds-num { font-family: var(--mono, \"JetBrains Mono\", ui-monospace, monospace); letter-spacing: -0.01em; } .ds-pair-past h3 { color: var(--ink-3, #8FA2D1); } .ds-pair-past p, .ds-pair-past .ds-pair-t, .ds-pair-past .ds-pair-room { color: #7387BA; }"
+    },
+    {
+      "name": "Week Strip",
+      "kind": "nav",
+      "refersTo": "week-bar",
+      "description": "Fixed bottom navigation: week arrows and label, day tabs with one tick per pair; selected day on Swell with amber ticks, today's numeral amber.",
+      "html": "<nav class=\"ds-week\" aria-label=\"Дни недели\"><div class=\"ds-week-nav\"><button aria-label=\"Предыдущая неделя\" disabled><svg width=\"20\" height=\"20\" viewBox=\"0 0 20 20\" fill=\"none\" aria-hidden=\"true\"><path d=\"M12.5 4.5 7 10l5.5 5.5\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg></button><span class=\"ds-week-label\">Эта неделя · 19–24 октября</span><button aria-label=\"Следующая неделя\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 20 20\" fill=\"none\" aria-hidden=\"true\"><path d=\"M7.5 4.5 13 10l-5.5 5.5\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg></button></div><div class=\"ds-days\"><button class=\"ds-day\" aria-pressed=\"false\">Пн<b>19</b><span class=\"ds-ticks\"><i></i><i></i><i></i><i></i></span></button><button class=\"ds-day\" aria-pressed=\"false\">Вт<b>20</b><span class=\"ds-ticks\"><i></i><i></i><i></i></span></button><button class=\"ds-day ds-day-today\" aria-pressed=\"true\">Ср<b>21</b><span class=\"ds-ticks\"><i></i><i></i><i></i><i></i></span></button><button class=\"ds-day\" aria-pressed=\"false\">Чт<b>22</b><span class=\"ds-ticks\"><i></i><i></i><i></i><i></i></span></button><button class=\"ds-day\" aria-pressed=\"false\">Пт<b>23</b><span class=\"ds-ticks\"><i></i><i></i><i></i><i></i></span></button><button class=\"ds-day\" aria-pressed=\"false\">Сб<b>24</b><span class=\"ds-ticks\"><i></i><i></i></span></button></div></nav>",
+      "css": ".ds-week { padding: 8px 8px 10px; background: var(--sea-0, #071026); border-top: 1px solid var(--sea-2, #12224B); font-family: var(--font, \"Golos Text\", system-ui, sans-serif); } .ds-week-nav { display: flex; align-items: center; justify-content: space-between; padding: 0 4px 6px; } .ds-week-nav button { width: 36px; height: 30px; display: grid; place-items: center; border: 0; border-radius: 8px; background: none; color: var(--ink-3, #8FA2D1); cursor: pointer; } .ds-week-nav button:disabled { opacity: 0.3; cursor: default; } .ds-week-nav button:not(:disabled):active { background: var(--sea-2, #12224B); } .ds-week-nav button:focus-visible { outline: 2px solid var(--lamp, #FFD27A); outline-offset: 3px; } .ds-week-label { font-size: 13px; color: var(--ink-2, #BAC7EB); } .ds-days { display: flex; justify-content: space-between; gap: 4px; } .ds-day { flex: 1; max-width: 60px; padding: 7px 0 9px; border: 0; border-radius: 12px; background: none; text-align: center; font-family: var(--font, \"Golos Text\", system-ui, sans-serif); font-size: 12px; color: var(--ink-3, #8FA2D1); cursor: pointer; transition: background-color 200ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-day b { display: block; margin: 1px 0 6px; font-family: var(--mono, \"JetBrains Mono\", ui-monospace, monospace); font-size: 18px; font-weight: 600; color: var(--ink, #EAF0FF); } .ds-day-today b { color: var(--lamp, #FFD27A); } .ds-day[aria-pressed=\"true\"] { background: var(--sea-3, #1A2C5C); color: var(--ink-2, #BAC7EB); } .ds-day:focus-visible { outline: 2px solid var(--lamp, #FFD27A); outline-offset: 3px; } .ds-ticks { display: flex; gap: 3px; justify-content: center; height: 4px; } .ds-ticks i { width: 5px; height: 4px; border-radius: 2px; background: var(--sea-5, #36508F); } .ds-day[aria-pressed=\"true\"] .ds-ticks i { background: var(--lamp, #FFD27A); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "One Lamp on the Night Sea",
+    "overview": "The app is the Chersonesos lighthouse after dark. A deep navy sea holds everything: ground, surfaces, dividers and the dim marks of things not happening now, all stepped from one cold hue (OKLCH hue ≈265–269°). Porcelain ink carries the language. One warm lamp, amber, appears only where something is lit: the pair running now, today's date, whatever the student has just chosen, the control that has focus. A screen with no amber on it is a screen where nothing is happening.\n\nDensity is phone-first and one-handed. One column on a 20px gutter, 54px controls, a fixed week strip under the thumb. Information is quiet by default (13px meta in Fog, 1px hairlines) so the lit card and the figures can carry the weight. Every clock time, room, date and group code is set in tabular JetBrains Mono, so the timetable reads like an instrument panel and not a stack of equal cards. The world refuses the category default: a flat list of identical cards with a blue accent.\n\nMotion behaves like light, not like choreography. Day segments flash in left to right on a 70ms stagger, the running pair's glow breathes on a 4-second beam, the loading dot pulses like a beacon. Everything is touch-first: pressed states replace hover. Under reduced motion the whole system goes still, and the lit pair keeps a static glow.",
+    "keyCharacteristics": [
+      "A six-step night-sea navy ramp (sea-0 to sea-5) for ground, surfaces, dividers and idle marks.",
+      "One accent, Lamp Amber, used only as a mark (bars, dots, 2px rings, numerals, outlines), never as a fill.",
+      "Porcelain ink in three steps (ink, ink-2, ink-3) for all text.",
+      "Golos Text for words, JetBrains Mono with tabular figures for every figure.",
+      "Depth from tonal steps of navy; the bottom sheet is the only lifted layer.",
+      "A 14px corner family; selection drawn as an inset 2px amber ring.",
+      "Touch-first states: press scale, `aria-pressed`, `:focus-visible`. No hover."
+    ],
+    "rules": [
+      {
+        "name": "The One Lamp Rule",
+        "section": "colors",
+        "body": "Lamp Amber is the only accent and it only marks what is lit, current or chosen: bars, dots, 2px rings, outlines, a single numeral. It never fills a button, card, tab or background. If a screen has nothing happening, it has no amber."
+      },
+      {
+        "name": "The Porcelain Action Rule",
+        "section": "colors",
+        "body": "The primary action is a Porcelain fill with Night Sea text; the secondary action is a Swell fill with Porcelain text. No action is ever amber or a brighter blue."
+      },
+      {
+        "name": "The Tabular Figures Rule",
+        "section": "typography",
+        "body": "Clock times, rooms, dates, course numbers and group codes are JetBrains Mono with tabular figures and -0.01em tracking, wherever they appear, inline or standalone. A duration inside a sentence (\"осталось **1 ч 10 мин**\") stays in Golos at 600 with `tabular-nums`. Words never go mono."
+      },
+      {
+        "name": "The Sentence-Case Rule",
+        "section": "typography",
+        "body": "Labels are sentence case at 12–13px in Fog. Nothing in the system is uppercase or tracked open; the only letter-spacing is negative, on headings and figures."
+      },
+      {
+        "name": "The Tonal Step Rule",
+        "section": "elevation",
+        "body": "A surface is one navy step above what it sits on; pressed or selected is one step more. Cards and controls never get a drop shadow."
+      },
+      {
+        "name": "The Lit-Only Glow Rule",
+        "section": "elevation",
+        "body": "Only the running pair emits light. The beacon and progress segments may be amber, but nothing else casts a glow."
+      }
+    ],
+    "dos": [
+      "Do keep Lamp Amber (#FFD27A) to marks: bars, dots, 2px rings, outlines, a single numeral (The One Lamp Rule).",
+      "Do build depth one navy step at a time: Night Sea ground (#0A1430), Deep Water surface (#12224B), Swell (#1A2C5C) for pressed or selected.",
+      "Do set clock times, rooms, dates, course numbers and group codes in JetBrains Mono with tabular figures.",
+      "Do make the primary action a 54px Porcelain bar (#EAF0FF fill, #0A1430 text, 14px radius) at the bottom of its screen.",
+      "Do mark selection with an inset 2px amber ring on Swell so the layout never shifts.",
+      "Do give every tappable element a press state (scale 0.985, tiles 0.97, 160ms, `cubic-bezier(0.16, 1, 0.3, 1)`) and the amber `:focus-visible` outline.",
+      "Do add Telegram's safe-area insets to anything fixed to the top or bottom, and clamp the column to 520px at 560px and up.",
+      "Do collapse all motion under `prefers-reduced-motion`, leaving the running pair's glow static."
+    ],
+    "donts": [
+      "Don't fill a button, card, tab or background with amber, and don't add a second accent hue (no blue accent, no green \"now\").",
+      "Don't put drop shadows on cards or controls; the bottom sheet is the only lifted layer.",
+      "Don't use glass, backdrop blur or gradients; fixed bars are solid navy with a hairline.",
+      "Don't set text in Harbour Navy (#253A75) or Unlit Navy (#36508F); they are marks, not ink.",
+      "Don't rely on hover. This system has no hover states.",
+      "Don't uppercase or open-track labels.",
+      "Don't imitate the official MSU identity (crest, logotype, official colours) or present the app as an official university product."
+    ]
+  }
+}

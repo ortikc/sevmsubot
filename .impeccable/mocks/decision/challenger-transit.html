@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:390px;height:844px;overflow:hidden;background:#0C1633;color:#F2F4FA;font-family:'Golos Text',system-ui,sans-serif}
+.hd{padding:24px 22px 8px}
+.hd span{font-size:13px;color:#8C9BC4}
+.hd b{display:block;font-size:26px;font-weight:700;margin-top:2px}
+.line{position:relative;margin:18px 22px 0;padding-left:40px}
+.line:before{content:"";position:absolute;left:11px;top:10px;bottom:30px;width:6px;background:#3D7BFF;border-radius:3px}
+.line .done:before{background:#E2463A}
+.st{position:relative;padding:4px 0 34px}
+.st:before{content:"";position:absolute;left:-36px;top:4px;width:18px;height:18px;border-radius:50%;background:#0C1633;border:4px solid #3D7BFF}
+.st.cur:before{left:-41px;top:0;width:28px;height:28px;border-color:#E2463A;background:#F2F4FA}
+.st .t{font-size:13px;color:#8C9BC4;font-variant-numeric:tabular-nums}
+.st h3{font-size:17px;font-weight:600;margin-top:2px}
+.st p{font-size:13px;color:#AEB9DA;margin-top:3px}
+.st.cur h3{font-size:22px}
+.badge{display:inline-block;margin-top:8px;font-size:12px;font-weight:600;padding:4px 10px;border-radius:12px;background:#E2463A}
+.brk{font-size:12px;color:#5D6D99;margin:-22px 0 22px}
+.tabs{position:absolute;bottom:0;left:0;right:0;display:flex;gap:6px;padding:12px 14px 28px;border-top:1px solid #1E2F5C}
+.tabs div{flex:1;text-align:center;padding:8px 0;border-radius:10px;font-size:13px;color:#8C9BC4}
+.tabs .on{background:#18284F;color:#F2F4FA;font-weight:600}
+</style></head><body>
+<div class="hd"><span>ПМ-101 · Среда</span><b>21 октября</b></div>
+<div class="line">
+  <div class="st cur"><div class="t">09:00–10:30 · 1 пара</div><h3>Математический анализ</h3><p>Семинар · ауд. 172 · Лактионова Н. В.</p><span class="badge">Сейчас · ещё 18 мин</span></div>
+  <div class="st"><div class="t">10:40–12:10 · 2 пара</div><h3>Математический анализ</h3><p>Семинар · ауд. 172</p></div>
+  <div class="brk">перерыв 45 мин</div>
+  <div class="st"><div class="t">12:55–14:25 · 3 пара</div><h3>История России</h3><p>Семинар · ауд. 205 · Белый К. В.</p></div>
+  <div class="st"><div class="t">14:35–16:05 · 4 пара</div><h3>История России</h3><p>Семинар · ауд. 205</p></div>
+</div>
+<div class="tabs"><div>Пн</div><div>Вт</div><div class="on">Ср</div><div>Чт</div><div>Пт</div><div>Сб</div></div>
+</body></html>
