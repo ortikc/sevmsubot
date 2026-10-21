@@ -2,7 +2,7 @@
 import asyncio
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 from bs4 import BeautifulSoup
@@ -17,6 +17,16 @@ HEADERS = {"User-Agent": "MSU-Sevastopol-MiniApp/0.1 (+student schedule bot)"}
 POLITE_DELAY = 0.4  # seconds between requests to the university site
 
 MASTER_PREFIX = "Маг_"
+MSK = timezone(timedelta(hours=3))  # Sevastopol keeps Moscow time
+WEEKS_AHEAD = 5                      # the current week plus four more
+
+
+def week_window(today: date | None = None):
+    """From this week's Monday to the end of the window. The site hides past days unless asked for them
+    with dateStart, so we always ask from Monday: the whole current week stays in the database."""
+    today = today or datetime.now(MSK).date()
+    monday = today - timedelta(days=today.weekday())
+    return monday, monday + timedelta(days=7 * WEEKS_AHEAD - 1)
 
 
 class Session:
@@ -166,10 +176,14 @@ async def sync_group(group_id: int, client=None):
         raise ValueError(f"unknown group {group_id}")
     own = client is None
     client = client or _client()
+    monday, last = week_window()
     try:
         s = Session(client)
         await s.open()
-        html = await s.post(g["faculty_id"], g["course"], g["id"])
+        html = await s.post(g["faculty_id"], g["course"], g["id"], extra={
+            "TimeTableForm[dateStart]": monday.strftime("%d.%m.%Y"),
+            "TimeTableForm[dateEnd]": last.strftime("%d.%m.%Y"),
+        })
     finally:
         if own:
             await client.aclose()
@@ -190,7 +204,20 @@ async def sync_group(group_id: int, client=None):
              for l in lessons],
         )
         conn.execute("UPDATE groups SET synced_at=? WHERE id=?", (_now(), group_id))
+        # last week is over: it goes as a whole, never day by day
+        conn.execute("DELETE FROM lessons WHERE group_id=? AND date < ?", (group_id, monday.isoformat()))
     return len(lessons)
+
+
+def prune_past_weeks():
+    """Lessons and sent reminders from before this week's Monday."""
+    monday, _ = week_window()
+    with db.session() as conn:
+        lessons = conn.execute("DELETE FROM lessons WHERE date < ?", (monday.isoformat(),)).rowcount
+        reminders = conn.execute(
+            "DELETE FROM reminders WHERE sent_at IS NOT NULL AND date < ?", (monday.isoformat(),)).rowcount
+    if lessons or reminders:
+        log.info("pruned %d lessons and %d reminders from past weeks", lessons, reminders)
 
 
 def _visible_dates(html):
@@ -217,6 +244,7 @@ def _visible_dates(html):
 
 
 async def sync_all():
+    prune_past_weeks()
     await sync_catalog()
     with db.session() as conn:
         ids = [r["id"] for r in conn.execute("SELECT id FROM groups ORDER BY faculty_id, course, name")]

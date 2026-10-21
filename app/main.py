@@ -38,6 +38,7 @@ _group_locks: dict[int, asyncio.Lock] = {}
 
 async def full_sync_loop():
     while True:
+        scraper.prune_past_weeks()  # a finished week leaves soon after Monday midnight
         with db.session() as conn:
             last = db.get_meta(conn, "all_synced_at")
         due = not last or datetime.now(timezone.utc) - datetime.fromisoformat(last) > FULL_SYNC_EVERY

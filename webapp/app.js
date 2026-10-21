@@ -24,7 +24,7 @@ const state = {
   weekStart: null,      // iso date (Monday)
   tab: "schedule",
   profileView: "profile",
-  scheduleView: "day",  // "day" or "stats" inside the schedule tab
+  scheduleView: "day",  // "day", "week" or "stats" inside the schedule tab
   ob: null,             // onboarding draft
   reminders: new Map(), // "date|start|subject" -> reminder
   liveSig: "",          // which pair the lead card shows, to know when to redraw
@@ -703,7 +703,7 @@ function nextLine(nxt) {
 }
 
 function emptyDay(iso, t, nxt) {
-  if (iso < t.iso) return `<p class="note"><strong>Пар не было</strong>Сайт расписания не показывает прошедшие дни, поэтому здесь только то, что приложение успело сохранить.</p>`;
+  if (iso < t.iso) return emptyState("free", "Пар не было", "В этот день занятий не было.");
   const known = [...state.lessons.keys()].filter((d) => (state.lessons.get(d) || []).length).sort().pop();
   if (known && iso > known) return `<p class="note"><strong>Расписание ещё не опубликовано</strong>Университет выкладывает его примерно на месяц вперёд.</p>`;
   return emptyState("free", "Пар нет", iso === t.iso ? nextLine(nxt) : "Свободный день.");
@@ -815,7 +815,7 @@ app.addEventListener("touchend", (e) => {
   const dx = p.clientX - touch.x, dy = p.clientY - touch.y;
   touch = null;
   if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-  if (state.scheduleView === "stats") {
+  if (state.scheduleView !== "day") {
     const ws = addDays(state.weekStart, dx < 0 ? 7 : -7);
     if (ws >= mondayOf(now().iso) && ws <= addDays(mondayOf(now().iso), 21)) shiftWeek(dx < 0 ? 7 : -7);
     return;
@@ -827,24 +827,26 @@ app.addEventListener("touchend", (e) => {
   shiftWeek(dx < 0 ? 7 : -7, next);
 }, { passive: true });
 
-/* ---------- schedule tab: day view or week statistics ---------- */
+/* ---------- schedule tab: day, week table or week statistics ---------- */
 
+const SCHEDULE_VIEWS = [["day", "День"], ["week", "Неделя"], ["stats", "Статистика"]];
 let schedTabs = null;
 /** the switch at the top of the schedule tab stays mounted, so its pill can travel; views render below it */
 function scheduleHost() {
   let host = document.getElementById("sched-body");
   if (!host) {
     app.innerHTML = `
-      <div class="slide-tabs segmented sched-switch" role="tablist" aria-label="Расписание или статистика">
+      <div class="slide-tabs segmented sched-switch" role="tablist" aria-label="Вид расписания">
         <span class="slide-cursor" aria-hidden="true"></span>
-        <button role="tab" data-sview="day" aria-selected="${state.scheduleView === "day"}">Расписание</button>
-        <button role="tab" data-sview="stats" aria-selected="${state.scheduleView === "stats"}">Статистика</button>
+        ${SCHEDULE_VIEWS.map(([id, label]) => `<button role="tab" data-sview="${id}" aria-selected="${state.scheduleView === id}">${label}</button>`).join("")}
       </div>
       <div id="sched-body"></div>`;
     schedTabs = new SlideTabs(app.querySelector(".sched-switch"), (tab) => {
       haptic();
+      const order = SCHEDULE_VIEWS.map(([id]) => id);
+      const dir = Math.sign(order.indexOf(tab.dataset.sview) - order.indexOf(state.scheduleView));
       state.scheduleView = tab.dataset.sview;
-      renderSchedule({ dir: state.scheduleView === "stats" ? 1 : -1 });
+      renderSchedule({ dir });
     });
     host = document.getElementById("sched-body");
   }
@@ -853,8 +855,95 @@ function scheduleHost() {
 
 function renderSchedule(opts = {}) {
   if (state.scheduleView === "stats") renderStats(opts);
+  else if (state.scheduleView === "week") renderWeek(opts);
   else renderDay(opts);
 }
+
+/* ---------- week table: days down, pairs across, so a missing pair is a visible hole ---------- */
+
+// standard pair times, for a column no lesson this week fills
+const PAIR_TIMES = { 1: ["09:00", "10:30"], 2: ["10:40", "12:10"], 3: ["12:55", "14:25"], 4: ["14:35", "16:05"], 5: ["16:15", "17:45"], 6: ["17:55", "19:25"] };
+const SHORT_NAMES = [
+  [/^математический анализ/i, "Матанализ"],
+  [/^физическая культура/i, "Физ-ра"],
+  [/^безопасность жизнедеятельности/i, "БЖД"],
+  [/^иностранный язык/i, "Иностр. язык"],
+  [/^алгоритмы и алгоритмические языки/i, "Алгоритмы"],
+  [/^практикум на эвм/i, "Практикум ЭВМ"],
+  [/^алгебра и геометрия/i, "Алгебра и геометрия"],
+  [/^история россии/i, "История России"],
+];
+function shortSubject(name) {
+  for (const [re, short] of SHORT_NAMES) if (re.test(name)) return short;
+  return name.replace(/\s*\(.*?\)\s*/g, " ").trim();
+}
+
+function renderWeek({ dir = 0 } = {}) {
+  const t = now();
+  const ws = state.weekStart;
+  const { name, range } = weekRange(ws, t);
+  const thisWeek = mondayOf(t.iso);
+  const slide = dir ? (dir > 0 ? "slide-next" : "slide-prev") : "";
+
+  const days = Array.from({ length: 7 }, (_, i) => addDays(ws, i))
+    .map((iso) => ({ iso, slots: slotsOf(iso) }))
+    .filter((d, i) => i < 6 || d.slots.length); // Sunday only when it has pairs
+  const all = days.flatMap((d) => d.slots);
+  const maxPair = Math.max(4, ...all.map((s) => s.pair));
+  const times = {};
+  for (const s of all) times[s.pair] = [s.start, s.end];
+  const cols = Array.from({ length: maxPair }, (_, i) => i + 1);
+
+  const head = `<div class="wk-corner"></div>${cols.map((p) => {
+    const [a] = times[p] || PAIR_TIMES[p] || ["", ""];
+    return `<div class="wk-h"><b>${p}</b><span class="num">${a ? clock(a) : ""}</span></div>`;
+  }).join("")}`;
+
+  const rows = days.map(({ iso, slots }) => {
+    const d = dateOf(iso);
+    const isToday = iso === t.iso;
+    const label = `<div class="wk-day ${isToday ? "today" : ""}"><b>${WD_SHORT[d.getDay()]}</b><span class="num">${d.getDate()}</span></div>`;
+    const cells = cols.map((p) => {
+      const s = slots.find((x) => x.pair === p);
+      if (!s) return `<div class="wk-cell empty ${isToday ? "today" : ""}" aria-label="${p} пара: нет пары"></div>`;
+      const l = s.items[0];
+      const past = iso < t.iso || (isToday && t.min >= toMin(s.end));
+      const running = isToday && t.min >= toMin(s.start) && t.min < toMin(s.end);
+      const more = s.items.length > 1 ? `<span class="wk-more">+${s.items.length - 1}</span>` : "";
+      return `
+        <button class="wk-cell pressable ${past ? "past" : ""} ${running ? "now" : ""}" style="${hueVar(l.subject)}"
+                data-date="${iso}" data-pair="${p}" data-idx="0"
+                aria-label="${WEEKDAYS[d.getDay()]}, ${p} пара: ${esc(l.subject)}${l.room ? `, аудитория ${esc(l.room)}` : ""}">
+          <span class="wk-name">${esc(shortSubject(l.subject))}</span>
+          ${l.room ? `<span class="wk-room num">${esc(l.room)}</span>` : ""}${more}
+        </button>`;
+    }).join("");
+    return label + cells;
+  }).join("");
+
+  scheduleHost().innerHTML = `
+    <header class="title-row">
+      <div><h1>Неделя</h1><p class="sub">${name ? `${name} · ${range}` : range}</p></div>
+      <div class="week-arrows">
+        <button class="icon-btn" id="wk-prev" aria-label="Предыдущая неделя" ${ws <= thisWeek ? "disabled" : ""}>${icon.left}</button>
+        <button class="icon-btn" id="wk-next" aria-label="Следующая неделя" ${ws >= addDays(thisWeek, 21) ? "disabled" : ""}>${icon.right}</button>
+      </div>
+    </header>
+    <div class="day-body ${slide}">
+      <div class="wk-scroll">
+        <div class="wk-table" style="--cols:${maxPair}" role="grid" aria-label="Расписание на неделю">${head}${rows}</div>
+      </div>
+      <p class="wk-key"><i class="wk-swatch" aria-hidden="true"></i>нет пары</p>
+      ${sourceLine()}
+    </div>`;
+
+  bindStats(); // the week arrows
+  app.querySelectorAll(".wk-cell.pressable").forEach((el) => {
+    el.addEventListener("click", () => openPairSheet(el.dataset.date, Number(el.dataset.pair), Number(el.dataset.idx)));
+  });
+}
+
+
 
 /* ---------- donut chart: the DonutChart component (React + framer-motion) ported to SVG + CSS ---------- */
 
@@ -974,10 +1063,7 @@ function weekStats(ws, t) {
   const latest = slots.reduce((a, s) => (!a || toMin(s.end) > toMin(a.end) ? s : a), null);
   const done = slots.filter((s) => s.iso < t.iso || (s.iso === t.iso && t.min >= toMin(s.end))).length;
 
-  // the site never shows past days, so a past weekday with nothing in it may simply be unknown
-  const unknown = byDay.slice(0, 6).filter((d) => d.iso < t.iso && !d.slots.length).map((d) => d.iso);
-
-  return { byDay, slots, minutes, subjects, kinds, teachers, busiest, lightest, windows, earliest, latest, done, unknown };
+  return { byDay, slots, minutes, subjects, kinds, teachers, busiest, lightest, windows, earliest, latest, done };
 }
 
 /** "Среда · 4 пары", or "ср, чт, пт · 4 пары" when several days tie */
@@ -1004,7 +1090,7 @@ function renderStats({ dir = 0 } = {}) {
 
   if (!st.slots.length) {
     scheduleHost().innerHTML = `${header}<div class="day-body ${slide}">${emptyState("free", "На этой неделе пар нет",
-      st.unknown.length ? "Сайт расписания не показывает прошедшие дни." : "Свободная неделя.")}</div>`;
+      "Свободная неделя.")}</div>`;
     bindStats();
     return;
   }
@@ -1030,11 +1116,10 @@ function renderStats({ dir = 0 } = {}) {
   const load = loadDays.map((d) => {
     const n = d.slots.length;
     const top = st.busiest.some((b) => b.iso === d.iso);
-    const unknown = st.unknown.includes(d.iso);
     return `
-      <div class="load-col ${top ? "top" : ""} ${d.iso === t.iso ? "today" : ""}" title="${dayTitle(d.iso)}: ${unknown ? "нет данных" : pairs(n)}">
-        <span class="n num">${unknown ? "—" : n}</span>
-        <i style="height:${unknown ? 0 : (n / maxLoad) * 100}%"></i>
+      <div class="load-col ${top ? "top" : ""} ${d.iso === t.iso ? "today" : ""}" title="${dayTitle(d.iso)}: ${pairs(n)}">
+        <span class="n num">${n}</span>
+        <i style="height:${(n / maxLoad) * 100}%"></i>
         <span class="d">${WD_SHORT[dateOf(d.iso).getDay()]}</span>
       </div>`;
   }).join("");
@@ -1062,13 +1147,8 @@ function renderStats({ dir = 0 } = {}) {
       </div>
     </section>` : "";
 
-  const note = st.unknown.length
-    ? `<p class="note">Сайт расписания не показывает прошедшие дни, поэтому ${st.unknown.map((iso) => WEEKDAYS[dateOf(iso).getDay()].toLowerCase()).join(" и ")} в статистику не попали.</p>`
-    : "";
-
   scheduleHost().innerHTML = `${header}
     <div class="day-body ${slide}">
-      ${note}
       <dl class="kpis">
         <div><dt>Пар</dt><dd class="num">${pairsTotal}</dd></div>
         <div><dt>Академ. часов</dt><dd class="num">${hoursText(acad)}</dd><small>по 45 мин</small></div>
