@@ -25,6 +25,7 @@ const state = {
   tab: "schedule",
   profileView: "profile",
   scheduleView: "day",  // "day", "week" or "stats" inside the schedule tab
+  settings: null,       // the bot's settings for this student, loaded with the settings view
   ob: null,             // onboarding draft
   reminders: new Map(), // "date|start|subject" -> reminder
   liveSig: "",          // which pair the lead card shows, to know when to redraw
@@ -1358,6 +1359,182 @@ function bindProfileBody() {
     haptic();
     switchTheme(b.dataset.themePref, e.clientX, e.clientY);
   }));
+
+  // notifications: each control saves itself
+  const st = state.settings;
+  app.querySelector('[data-set="remind_all"]')?.addEventListener("click", () => { haptic(); saveSetting({ remind_all: !st.remind_all }); });
+  app.querySelectorAll("[data-lead]").forEach((b) => b.addEventListener("click", () => { haptic(); saveSetting({ remind_lead: Number(b.dataset.lead) }); }));
+  app.querySelector('[data-set="digest"]')?.addEventListener("click", () => { haptic(); saveSetting({ digest_time: st.digest_time ? "off" : "07:30" }); });
+  app.querySelectorAll("[data-digest]").forEach((b) => b.addEventListener("click", () => { haptic(); saveSetting({ digest_time: b.dataset.digest }); }));
+
+  app.querySelectorAll("[data-view-pref]").forEach((b) => b.addEventListener("click", () => {
+    haptic();
+    setViewPref(b.dataset.viewPref);
+    updateProfileBody();
+  }));
+  document.getElementById("open-calendar")?.addEventListener("click", openCalendarSheet);
+  document.getElementById("refresh-now")?.addEventListener("click", refreshNow);
+  document.getElementById("report")?.addEventListener("click", () => {
+    haptic();
+    const url = `https://t.me/${DEVELOPER}`;
+    if (tg?.openTelegramLink && inTelegram) tg.openTelegramLink(url); else window.open(url, "_blank");
+  });
+}
+
+/* ---------- settings ---------- */
+
+const DEVELOPER = "ortikc";
+const APP_VERSION = "1.2";
+const VIEW_KEY = "msu.view";
+
+function viewPref() {
+  try { return localStorage.getItem(VIEW_KEY) === "week" ? "week" : "day"; } catch (_) { return "day"; }
+}
+function setViewPref(v) {
+  try { localStorage.setItem(VIEW_KEY, v); } catch (_) {}
+}
+
+async function ensureSettings() {
+  if (state.settings) return;
+  try {
+    state.settings = await api("/api/settings");
+  } catch (_) {
+    state.settings = { failed: true };
+  }
+  if (state.tab === "profile" && state.profileView === "settings") updateProfileBody();
+}
+
+/** optimistic: the switch moves at once, and moves back if the server says no */
+async function saveSetting(patch) {
+  const before = { ...state.settings };
+  Object.assign(state.settings, patch, patch.digest_time === "off" ? { digest_time: null } : {});
+  updateProfileBody();
+  try {
+    state.settings = await api("/api/settings", { method: "POST", body: JSON.stringify(patch) });
+  } catch (_) {
+    state.settings = before;
+    tg?.showAlert?.("Не получилось сохранить настройку. Проверьте интернет и попробуйте ещё раз.");
+  }
+  updateProfileBody();
+}
+
+const switchRow = (id, label, hint, on) => `
+  <li><button data-set="${id}" role="switch" aria-checked="${on}">
+    <span>${label}<small>${hint}</small></span><span class="switch" aria-hidden="true"></span>
+  </button></li>`;
+const chipsRow = (label, items) => `
+  <li class="chips-row"><span>${label}</span><div class="chips">${items}</div></li>`;
+
+function notificationsSection() {
+  const st = state.settings;
+  if (!st) { ensureSettings(); return `<ul class="options"><li class="options-note">Загружаем настройки…</li></ul>`; }
+  if (st.failed) return `<ul class="options"><li class="options-note">Не получилось загрузить настройки бота. Откройте раздел ещё раз.</li></ul>`;
+  const leads = st.leads.map((m) => `<button data-lead="${m}" aria-pressed="${st.remind_lead === m}">${m} мин</button>`).join("");
+  const times = st.digest_times.map((t) => `<button class="num" data-digest="${t}" aria-pressed="${st.digest_time === t}">${clock(t)}</button>`).join("");
+  return `
+    <ul class="options">
+      ${switchRow("remind_all", "Напоминать о каждой паре", "Бот напишет перед началом", st.remind_all)}
+      ${st.remind_all ? chipsRow("Заранее", leads) : ""}
+      ${switchRow("digest", "Утренняя сводка", "Пары на день; в дни без пар бот молчит", Boolean(st.digest_time))}
+      ${st.digest_time ? chipsRow("Во сколько", times) : ""}
+    </ul>`;
+}
+
+function settingsView() {
+  const pref = themePref();
+  const opts = [
+    ["dark", "Тёмная", "Чёрный фон"],
+    ["light", "Светлая", "Белый фон"],
+    ["auto", "Как в Telegram", `Сейчас ${systemTheme() === "light" ? "светлая" : "тёмная"}`],
+  ];
+  const view = viewPref();
+  const synced = state.syncedAt
+    ? `Обновлено ${new Date(state.syncedAt).toLocaleString("ru-RU", { timeZone: "Europe/Moscow", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`
+    : "С сайта raspisanie.sev.msu.ru";
+  return `
+    <h1 class="view-title">Настройки</h1>
+
+    <h2 class="group-label">Уведомления от бота</h2>
+    ${notificationsSection()}
+
+    <h2 class="group-label">Расписание</h2>
+    <ul class="options">
+      ${chipsRow("Открывать сначала", `
+        <button data-view-pref="day" aria-pressed="${view === "day"}">День</button>
+        <button data-view-pref="week" aria-pressed="${view === "week"}">Неделя</button>`)}
+      <li><button id="open-calendar"><span>Добавить в календарь<small>Google, Apple и другие календари</small></span>${icon.right}</button></li>
+      <li><button id="refresh-now"><span>Обновить расписание<small id="synced-note">${esc(synced)}</small></span><span class="action-text" id="refresh-label">Обновить</span></button></li>
+    </ul>
+
+    <h2 class="group-label">Тема оформления</h2>
+    <ul class="options" role="radiogroup" aria-label="Тема оформления">
+      ${opts.map(([id, label, hint]) => `
+        <li><button role="radio" data-theme-pref="${id}" aria-checked="${pref === id}">
+          <span>${label}<small>${hint}</small></span><span class="check">${icon.check}</span>
+        </button></li>`).join("")}
+    </ul>
+
+    <h2 class="group-label">Помощь</h2>
+    <ul class="options">
+      <li><button id="report"><span>Сообщить об ошибке<small>Написать разработчику @${DEVELOPER}</small></span>${icon.right}</button></li>
+    </ul>
+    <p class="source">Версия ${APP_VERSION} · расписание с raspisanie.sev.msu.ru</p>`;
+}
+
+async function refreshNow() {
+  const btn = document.getElementById("refresh-now");
+  const label = document.getElementById("refresh-label");
+  if (!btn || btn.disabled) return;
+  haptic();
+  btn.disabled = true;
+  label.textContent = "Обновляем…";
+  try {
+    const r = await api("/api/refresh", { method: "POST" });
+    state.syncedAt = r.synced_at;
+    state.lessons.clear();
+    state.loadedWeeks.clear();
+    await loadWeek(state.weekStart || mondayOf(now().iso));
+    haptic("success");
+    if (state.profileView === "settings") {
+      updateProfileBody();
+      document.getElementById("refresh-label").textContent = "Готово";
+    }
+  } catch (_) {
+    haptic("error");
+    btn.disabled = false;
+    label.textContent = "Не вышло, ещё раз";
+  }
+}
+
+function openCalendarSheet() {
+  const url = state.settings?.calendar_url;
+  if (!url) return;
+  haptic();
+  openSheet(`
+    <div class="sheet-head">
+      <svg class="mark sheet-mark" style="--c: var(--accent)" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="18" height="16.5" rx="3"/><path d="M8 2.5v4M16 2.5v4M3 10h18M7.5 14h3M13.5 14h3M7.5 17.5h3"/></svg>
+      <div><h2 id="sheet-title">Пары в вашем календаре</h2><p>Календарь сам подтягивает изменения расписания</p></div>
+    </div>
+    <p class="link-box">${esc(url)}</p>
+    <div class="sheet-actions">
+      <button class="btn" id="cal-copy">Скопировать ссылку</button>
+      <button class="btn secondary" id="cal-open">Открыть файл календаря</button>
+    </div>
+    <p class="btn-note" id="cal-note" aria-live="polite"></p>
+    <ol class="steps">
+      <li><b>Google Календарь.</b> На компьютере откройте calendar.google.com → «Другие календари» → «+» → «Добавить по URL» и вставьте ссылку.</li>
+      <li><b>iPhone.</b> Настройки → Календарь → Учётные записи → Новая учётная запись → Другое → «Подписной календарь» и вставьте ссылку.</li>
+    </ol>`, (panel) => {
+    panel.querySelector("#cal-copy").addEventListener("click", async () => {
+      const ok = await copyText(url);
+      panel.querySelector("#cal-note").textContent = ok ? "Ссылка скопирована." : "Не получилось скопировать, выделите ссылку вручную.";
+      haptic(ok ? "success" : "error");
+    });
+    panel.querySelector("#cal-open").addEventListener("click", () => {
+      haptic();
+      if (tg?.openLink && inTelegram) tg.openLink(url); else window.open(url, "_blank");
+    });
+  });
 }
 
 /** the new theme spreads in a circle from the finger, where the browser supports view transitions */
@@ -1390,25 +1567,6 @@ function profileView() {
     <button class="btn secondary" id="edit-profile">Изменить учебные данные</button>`;
 }
 
-function settingsView() {
-  const pref = themePref();
-  const opts = [
-    ["dark", "Тёмная", "Чёрный фон"],
-    ["light", "Светлая", "Белый фон"],
-    ["auto", "Как в Telegram", `Сейчас ${systemTheme() === "light" ? "светлая" : "тёмная"}`],
-  ];
-  return `
-    <h1 class="view-title">Настройки</h1>
-    <h2 class="group-label">Тема оформления</h2>
-    <ul class="options" role="radiogroup" aria-label="Тема оформления">
-      ${opts.map(([id, label, hint]) => `
-        <li><button role="radio" data-theme-pref="${id}" aria-checked="${pref === id}">
-          <span>${label}<small>${hint}</small></span><span class="check">${icon.check}</span>
-        </button></li>`).join("")}
-    </ul>
-    ${sourceLine()}`;
-}
-
 function friendsView() {
   return `
     <h1 class="view-title">Друзья</h1>
@@ -1426,6 +1584,7 @@ async function boot() {
     state.me = me;
     state.catalog = catalog;
     await resolveAvatar(me);
+    state.scheduleView = viewPref();
     if (!me.onboarded) startOnboarding(false);
     else await openSchedule();
   } catch (e) {

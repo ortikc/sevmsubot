@@ -1,7 +1,10 @@
 """HTTP API + static Mini App."""
 import asyncio
+import hashlib
+import html
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -27,6 +30,10 @@ FULL_SYNC_EVERY = timedelta(hours=6)
 GROUP_STALE_AFTER = timedelta(hours=2)
 MSK = timezone(timedelta(hours=3))  # Sevastopol keeps Moscow time, no DST
 REMIND_BEFORE = timedelta(minutes=10)
+LEADS = (5, 10, 15)                                        # "remind about every pair", minutes before
+DIGEST_TIMES = ("06:30", "07:00", "07:30", "08:00", "08:30")  # morning summary
+REFRESH_COOLDOWN = timedelta(seconds=60)
+KINDS = {"лк": "лекция", "сем": "семинар", "пз": "практика", "лб": "лабораторная", "лаб": "лабораторная"}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -55,27 +62,129 @@ def _clock(hhmm: str) -> str:
     return f"{int(h)}:{m}"
 
 
+def _pairs_word(n: int) -> str:
+    a, b = n % 10, n % 100
+    if a == 1 and b != 11:
+        return "пара"
+    if 2 <= a <= 4 and not 12 <= b <= 14:
+        return "пары"
+    return "пар"
+
+
+def materialize_auto_reminders(conn, now: datetime, tg_id: int | None = None):
+    """'Remind about every pair' becomes reminder rows for today and tomorrow, one per pair slot."""
+    today = now.astimezone(MSK).date()
+    users = conn.execute(
+        "SELECT tg_id, group_id, remind_lead FROM users WHERE remind_all=1 AND group_id IS NOT NULL"
+        + (" AND tg_id=?" if tg_id else ""), (tg_id,) if tg_id else (),
+    ).fetchall()
+    for u in users:
+        slots = conn.execute(
+            "SELECT date, start, end, MIN(subject) AS subject, room FROM lessons "
+            "WHERE group_id=? AND date BETWEEN ? AND ? GROUP BY date, start",
+            (u["group_id"], today.isoformat(), (today + timedelta(days=1)).isoformat()),
+        ).fetchall()
+        for l in slots:
+            starts = datetime.combine(date.fromisoformat(l["date"]), time.fromisoformat(l["start"]), MSK)
+            remind_at = starts - timedelta(minutes=u["remind_lead"])
+            if remind_at < now:
+                continue  # too late to say "in N minutes"
+            conn.execute(
+                "INSERT OR IGNORE INTO reminders(tg_id, date, start, end, subject, room, remind_at, lead, auto) "
+                "VALUES(?,?,?,?,?,?,?,?,1)",
+                (u["tg_id"], l["date"], l["start"], l["end"], l["subject"], l["room"],
+                 remind_at.astimezone(timezone.utc).isoformat(timespec="seconds"), u["remind_lead"]),
+            )
+
+
+def _reminder_html(r, e):
+    text = f"{e('alarm')} <b>Через {r['lead']} минут: {html.escape(r['subject'])}</b>\n{e('clock')} {_clock(r['start'])}–{_clock(r['end'])}"
+    if r["room"]:
+        text += f" · {e('pin')} ауд. {html.escape(r['room'])}"
+    return text
+
+
+def _digest_html(slots, e):
+    lines = [f"{e('sun')} <b>Доброе утро! Сегодня {len(slots)} {_pairs_word(len(slots))}</b>", ""]
+    for i, s in enumerate(slots):
+        kind = KINDS.get((s["kind"] or "").lower(), s["kind"] or "")
+        room = f" · {e('pin')} {html.escape(s['room'])}" if s["room"] else ""
+        lines.append(f"{e('book')} <b>{_clock(s['start'])}</b> {html.escape(s['subject'])}"
+                     f"{f' ({html.escape(kind)})' if kind else ''}{room}")
+    return "\n".join(lines)
+
+
+async def send_due_reminders(now: datetime):
+    with db.session() as conn:
+        due = [dict(r) for r in conn.execute(
+            "SELECT r.*, u.group_id FROM reminders r JOIN users u ON u.tg_id = r.tg_id "
+            "WHERE r.sent_at IS NULL AND r.remind_at <= ? ORDER BY r.remind_at",
+            (now.isoformat(timespec="seconds"),))]
+    for r in due:
+        with db.session() as conn:
+            # the schedule may have changed since the reminder was set: stay quiet about a pair that is gone
+            still = conn.execute("SELECT 1 FROM lessons WHERE group_id=? AND date=? AND start=?",
+                                 (r["group_id"], r["date"], r["start"])).fetchone()
+        if still:
+            try:
+                await bot.send_rich(r["tg_id"], lambda e: _reminder_html(r, e))
+            except Exception as e:  # the student may have blocked the bot; never retry forever
+                log.warning("reminder %s not sent: %s", r["id"], e)
+        with db.session() as conn:
+            conn.execute("UPDATE reminders SET sent_at=? WHERE id=?",
+                         (datetime.now(timezone.utc).isoformat(timespec="seconds"), r["id"]))
+
+
+async def send_digests(now: datetime):
+    """The morning summary goes once a day, at the chosen time or as soon after it as the server is up,
+    but only before the first pair, and only on days with pairs."""
+    local = now.astimezone(MSK)
+    today, hhmm = local.date().isoformat(), local.strftime("%H:%M")
+    with db.session() as conn:
+        users = [dict(u) for u in conn.execute(
+            "SELECT tg_id, group_id, digest_time FROM users WHERE digest_time IS NOT NULL AND group_id IS NOT NULL "
+            "AND (digest_sent_on IS NULL OR digest_sent_on < ?) AND digest_time <= ?", (today, hhmm))]
+    for u in users:
+        with db.session() as conn:
+            conn.execute("UPDATE users SET digest_sent_on=? WHERE tg_id=?", (today, u["tg_id"]))
+            slots = [dict(r) for r in conn.execute(
+                "SELECT start, end, MIN(subject) AS subject, kind, room FROM lessons "
+                "WHERE group_id=? AND date=? GROUP BY start ORDER BY start", (u["group_id"], today))]
+        if not slots or hhmm >= slots[0]["start"]:
+            continue
+        try:
+            await bot.send_rich(u["tg_id"], lambda e: _digest_html(slots, e))
+        except Exception as e:
+            log.warning("digest for %s not sent: %s", u["tg_id"], e)
+
+
 async def reminder_loop():
-    """Send every due reminder through the bot, once."""
+    """Every 20 seconds: plan the automatic reminders, send what is due, send morning summaries."""
     while True:
         await asyncio.sleep(20)
         if not bot:
             continue
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        with db.session() as conn:
-            due = [dict(r) for r in conn.execute(
-                "SELECT * FROM reminders WHERE sent_at IS NULL AND remind_at <= ? ORDER BY remind_at", (now,))]
-        for r in due:
-            text = f"Через 10 минут: {r['subject']}\n{_clock(r['start'])}–{_clock(r['end'])}"
-            if r["room"]:
-                text += f" · ауд. {r['room']}"
-            try:
-                await bot.call("sendMessage", chat_id=r["tg_id"], text=text)
-            except Exception as e:  # the student may have blocked the bot; never retry forever
-                log.warning("reminder %s not sent: %s", r["id"], e)
+        now = datetime.now(timezone.utc)
+        try:
             with db.session() as conn:
-                conn.execute("UPDATE reminders SET sent_at=? WHERE id=?",
-                             (datetime.now(timezone.utc).isoformat(timespec="seconds"), r["id"]))
+                materialize_auto_reminders(conn, now)
+            await send_due_reminders(now)
+            await send_digests(now)
+        except Exception as e:
+            log.warning("reminder loop: %s", e)
+
+
+async def _repoint_everyone(url: str):
+    with db.session() as conn:
+        chats = [r["tg_id"] for r in conn.execute("SELECT tg_id FROM users WHERE tg_id > 1")]
+        buttons = [(r["chat_id"], r["message_id"]) for r in conn.execute("SELECT chat_id, message_id FROM open_buttons")]
+    await bot.repoint(url, chats, buttons)
+    log.info("re-pointed %d chats and %d open buttons to %s", len(chats), len(buttons), url)
+
+
+def _remember_open_button(chat_id: int, message_id: int):
+    with db.session() as conn:
+        conn.execute("INSERT OR IGNORE INTO open_buttons(chat_id, message_id) VALUES(?, ?)", (chat_id, message_id))
 
 
 @asynccontextmanager
@@ -85,6 +194,8 @@ async def lifespan(_app):
     tasks = [asyncio.create_task(full_sync_loop()), asyncio.create_task(reminder_loop())]
     if BOT_TOKEN:
         bot = Bot(BOT_TOKEN, os.getenv("WEBAPP_URL", ""), ROOT / "data" / "webapp_url.txt")
+        bot.on_url_change = _repoint_everyone
+        bot.on_open_button = _remember_open_button
         try:
             await bot.setup()
             tasks.append(asyncio.create_task(bot.poll()))
@@ -291,6 +402,139 @@ def delete_reminder(rid: int, user=Depends(current_user)):
     with db.session() as conn:
         conn.execute("DELETE FROM reminders WHERE id=? AND tg_id=?", (rid, user["tg_id"]))
     return {"ok": True}
+
+
+class SettingsIn(BaseModel):
+    remind_all: bool | None = None
+    remind_lead: int | None = None
+    digest_time: str | None = None  # "HH:MM" from DIGEST_TIMES, or "off"
+
+
+def _calendar_url(conn, user) -> str:
+    token = user["cal_token"]
+    if not token:
+        token = secrets.token_urlsafe(18)
+        conn.execute("UPDATE users SET cal_token=? WHERE tg_id=?", (token, user["tg_id"]))
+    base = (bot.webapp_url if bot else "") or "http://localhost:8080"
+    return f"{base}/cal/{token}.ics"
+
+
+def _settings(conn, user):
+    user = dict(conn.execute("SELECT * FROM users WHERE tg_id=?", (user["tg_id"],)).fetchone())
+    return {
+        "remind_all": bool(user["remind_all"]),
+        "remind_lead": user["remind_lead"],
+        "digest_time": user["digest_time"],
+        "calendar_url": _calendar_url(conn, user),
+        "leads": list(LEADS),
+        "digest_times": list(DIGEST_TIMES),
+    }
+
+
+@app.get("/api/settings")
+def get_settings(user=Depends(current_user)):
+    with db.session() as conn:
+        return _settings(conn, user)
+
+
+@app.post("/api/settings")
+def save_settings(body: SettingsIn, user=Depends(current_user)):
+    now = datetime.now(timezone.utc)
+    with db.session() as conn:
+        if body.remind_lead is not None:
+            if body.remind_lead not in LEADS:
+                raise HTTPException(400, "Можно напоминать за 5, 10 или 15 минут")
+            conn.execute("UPDATE users SET remind_lead=? WHERE tg_id=?", (body.remind_lead, user["tg_id"]))
+        if body.remind_all is not None:
+            conn.execute("UPDATE users SET remind_all=? WHERE tg_id=?", (int(body.remind_all), user["tg_id"]))
+        if body.remind_all is not None or body.remind_lead is not None:
+            # replan this student's automatic reminders with the new rule
+            conn.execute("DELETE FROM reminders WHERE tg_id=? AND auto=1 AND sent_at IS NULL", (user["tg_id"],))
+            materialize_auto_reminders(conn, now, user["tg_id"])
+        if body.digest_time is not None:
+            if body.digest_time == "off":
+                conn.execute("UPDATE users SET digest_time=NULL WHERE tg_id=?", (user["tg_id"],))
+            elif body.digest_time in DIGEST_TIMES:
+                # a time already past today starts tomorrow, rather than firing the moment it is chosen
+                local = now.astimezone(MSK)
+                sent_on = local.date().isoformat() if local.strftime("%H:%M") >= body.digest_time else None
+                conn.execute("UPDATE users SET digest_time=?, digest_sent_on=? WHERE tg_id=?",
+                             (body.digest_time, sent_on, user["tg_id"]))
+            else:
+                raise HTTPException(400, "Такого времени нет в списке")
+        return _settings(conn, user)
+
+
+@app.post("/api/refresh")
+async def refresh(user=Depends(current_user)):
+    """Fetch the student's group from the site now, at most once a minute per group."""
+    if not user["group_id"]:
+        raise HTTPException(409, "Профиль не заполнен")
+    gid = user["group_id"]
+    with db.session() as conn:
+        synced = conn.execute("SELECT synced_at FROM groups WHERE id=?", (gid,)).fetchone()["synced_at"]
+    if not synced or datetime.now(timezone.utc) - datetime.fromisoformat(synced) > REFRESH_COOLDOWN:
+        await _refresh_group(gid)
+    with db.session() as conn:
+        synced = conn.execute("SELECT synced_at FROM groups WHERE id=?", (gid,)).fetchone()["synced_at"]
+    return {"synced_at": synced}
+
+
+def _ics_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+
+def _ics_fold(line: str) -> str:
+    """RFC 5545: lines over 75 octets continue on the next line after a space."""
+    out, cur = [], b""
+    for ch in line:
+        b = ch.encode("utf-8")
+        if len(cur) + len(b) > (75 if not out else 74):
+            out.append(cur.decode("utf-8"))
+            cur = b""
+        cur += b
+    out.append(cur.decode("utf-8"))
+    return "\r\n ".join(out)
+
+
+@app.get("/cal/{token}.ics")
+def calendar(token: str):
+    """A calendar subscription: Google or Apple Calendar fetch it by this secret link, no Telegram needed."""
+    with db.session() as conn:
+        user = conn.execute("SELECT * FROM users WHERE cal_token=?", (token,)).fetchone()
+        if not user or not user["group_id"]:
+            raise HTTPException(404)
+        group = conn.execute("SELECT name FROM groups WHERE id=?", (user["group_id"],)).fetchone()
+        monday, last = scraper.week_window()
+        lessons = conn.execute(
+            "SELECT * FROM lessons WHERE group_id=? AND date BETWEEN ? AND ? ORDER BY date, start",
+            (user["group_id"], monday.isoformat(), last.isoformat()),
+        ).fetchall()
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    utc = lambda d, t: datetime.combine(date.fromisoformat(d), time.fromisoformat(t), MSK) \
+        .astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")  # noqa: E731
+    lines = [
+        "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//MSU Sevastopol//Raspisanie//RU", "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH", f"X-WR-CALNAME:{_ics_escape('Пары ' + group['name'])}", "X-WR-TIMEZONE:Europe/Moscow",
+        "REFRESH-INTERVAL;VALUE=DURATION:PT6H", "X-PUBLISHED-TTL:PT6H",
+    ]
+    for l in lessons:
+        kind = KINDS.get((l["kind"] or "").lower(), l["kind"] or "")
+        uid = hashlib.sha1(f"{user['group_id']}|{l['date']}|{l['start']}|{l['subject']}|{l['teacher']}".encode()).hexdigest()[:16]
+        lines += [
+            "BEGIN:VEVENT", f"UID:{uid}@raspisanie-sev-msu", f"DTSTAMP:{stamp}",
+            f"DTSTART:{utc(l['date'], l['start'])}", f"DTEND:{utc(l['date'], l['end'])}",
+            f"SUMMARY:{_ics_escape(l['subject'] + (f' ({kind})' if kind else ''))}",
+        ]
+        if l["room"]:
+            lines.append(f"LOCATION:{_ics_escape('ауд. ' + l['room'])}")
+        if l["teacher"]:
+            lines.append(f"DESCRIPTION:{_ics_escape(l['teacher'])}")
+        lines.append("END:VEVENT")
+    lines.append("END:VCALENDAR")
+    body = "\r\n".join(_ics_fold(x) for x in lines) + "\r\n"
+    return Response(body, media_type="text/calendar; charset=utf-8",
+                    headers={"Content-Disposition": 'inline; filename="raspisanie.ics"', "Cache-Control": "no-cache"})
 
 
 @app.get("/api/avatar")

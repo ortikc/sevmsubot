@@ -58,6 +58,11 @@ CREATE TABLE IF NOT EXISTS reminders (
     UNIQUE (tg_id, date, start, subject)
 );
 CREATE INDEX IF NOT EXISTS reminders_due ON reminders(sent_at, remind_at);
+CREATE TABLE IF NOT EXISTS open_buttons (
+    chat_id     INTEGER NOT NULL,       -- the bot's messages carrying an "open the app" button
+    message_id  INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, message_id)
+);
 CREATE TABLE IF NOT EXISTS meta (
     key         TEXT PRIMARY KEY,
     value       TEXT
@@ -84,9 +89,30 @@ def session():
         conn.close()
 
 
+# columns added after the first release; init() adds whichever an existing database lacks
+MIGRATIONS = {
+    "users": [
+        ("remind_all", "INTEGER NOT NULL DEFAULT 0"),    # bot reminds about every pair
+        ("remind_lead", "INTEGER NOT NULL DEFAULT 10"),  # minutes before the pair
+        ("digest_time", "TEXT"),                         # HH:MM of the morning summary, NULL = off
+        ("digest_sent_on", "TEXT"),                      # ISO date of the last summary sent
+        ("cal_token", "TEXT"),                           # secret of the calendar subscription link
+    ],
+    "reminders": [
+        ("lead", "INTEGER NOT NULL DEFAULT 10"),
+        ("auto", "INTEGER NOT NULL DEFAULT 0"),          # made by "remind about every pair"
+    ],
+}
+
+
 def init() -> None:
     with session() as conn:
         conn.executescript(SCHEMA)
+        for table, columns in MIGRATIONS.items():
+            have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            for name, decl in columns:
+                if name not in have:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 def get_meta(conn, key, default=None):

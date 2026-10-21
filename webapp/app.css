@@ -459,6 +459,37 @@ svg { display: block; }
 .options button[aria-checked="true"] .check { opacity: 1; }
 .options small { display: block; font-size: 13px; color: var(--faint); margin-top: 1px; }
 .group-label { margin-top: 26px; font-size: 13px; color: var(--faint); }
+.options button:disabled { cursor: default; }
+.options .action-text { flex: none; font-size: 14px; font-weight: 500; color: var(--accent); }
+.options > li > button > svg { flex: none; width: 18px; height: 18px; fill: none; stroke: var(--faint); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.options-note { padding: 16px 18px; font-size: 14px; color: var(--muted); }
+
+/* a switch: the "on" state is the app's inversion, not a colour */
+.switch { flex: none; position: relative; width: 46px; height: 28px; border-radius: 999px; background: var(--raised); transition: background-color 200ms var(--ease); }
+.switch::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--text); transition: transform 220ms var(--ease), background-color 200ms var(--ease);
+}
+[aria-checked="true"] > .switch { background: var(--primary-bg); }
+[aria-checked="true"] > .switch::after { transform: translateX(18px); background: var(--primary-ink); }
+
+.chips-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 12px; padding: 12px 18px 14px; }
+.chips-row > span { font-size: 14px; color: var(--faint); }
+.chips { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.options .chips button {
+  width: auto; min-height: 0; display: inline-flex; align-items: center; justify-content: center;
+  height: 34px; padding: 0 13px; border-radius: 999px; background: var(--raised);
+  font-size: 14px; font-weight: 500; transition: background-color 150ms var(--ease), transform 150ms var(--ease);
+}
+.options .chips button:active { transform: scale(0.96); background: var(--raised); }
+.options .chips button[aria-pressed="true"] { background: var(--primary-bg); color: var(--primary-ink); }
+
+.link-box {
+  margin-top: 16px; padding: 12px 14px; border-radius: 12px; background: var(--surface);
+  font-size: 13px; color: var(--muted); word-break: break-all; -webkit-user-select: all; user-select: all;
+}
+.steps { margin: 14px 0 0 18px; display: grid; gap: 10px; font-size: 14px; line-height: 1.5; color: var(--muted); }
+.steps b { color: var(--text); font-weight: 600; }
 
 /* ---------- onboarding ---------- */
 
