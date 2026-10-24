@@ -35,8 +35,9 @@ def publish(url: str):
 def tunnel_command(kind: str, port: int):
     if kind == "cloudflared":
         exe = ROOT / "bin" / ("cloudflared.exe" if os.name == "nt" else "cloudflared")
+        # api.trycloudflare.com shows up in cloudflared's own error messages; it is never the app's address
         return [str(exe), "tunnel", "--no-autoupdate", "--url", f"http://localhost:{port}"], \
-            r"https://[a-z0-9-]+\.trycloudflare\.com"
+            r"https://(?!api\.)[a-z0-9-]+\.trycloudflare\.com"
     return ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ServerAliveInterval=30",
             "-o", "ExitOnForwardFailure=yes", "-R", f"80:localhost:{port}", "nokey@localhost.run",
             "--", "--output", "json"], r"https://[a-z0-9]+\.lhr\.life"
@@ -69,9 +70,11 @@ def watch_tunnel(proc, current_url, every=60, strikes=3):
 
 
 def keep_tunnel(kind: str, port: int):
-    """Run the tunnel forever, restarting it when it drops or loses its address."""
-    cmd, pattern = tunnel_command(kind, port)
+    """Run the tunnel forever, restarting it when it drops or loses its address. If cloudflared cannot
+    get a quick tunnel three times running (Cloudflare refuses them now and then), fall back to localhost.run."""
+    failures = 0
     while True:
+        cmd, pattern = tunnel_command(kind, port)
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, encoding="utf-8", errors="replace")
         found = {"url": None}
@@ -81,9 +84,15 @@ def keep_tunnel(kind: str, port: int):
             if m:
                 found["url"] = m.group(0)
                 publish(found["url"])
+            elif "failed" in line.lower():
+                print(f"  tunnel: {line.strip()}", flush=True)
         proc.wait()
+        failures = 0 if found["url"] else failures + 1
+        if kind == "cloudflared" and failures >= 3:
+            print("  cloudflared gets no quick tunnel, switching to localhost.run", flush=True)
+            kind, failures = "ssh", 0
         print("  tunnel dropped, reconnecting…", flush=True)
-        time.sleep(3)
+        time.sleep(3 if found["url"] else 10)
 
 
 def main():
