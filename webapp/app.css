@@ -436,8 +436,154 @@ svg { display: block; }
   font-size: 22px; font-weight: 600;
 }
 .avatar img { width: 100%; height: 100%; object-fit: cover; }
-.profile-head h1 { font-size: var(--fs-title); font-weight: 600; line-height: 1.25; }
+.profile-head h1 { font-size: var(--fs-title); font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
+.avatar-edit { position: relative; flex: none; border-radius: 50%; transition: transform 150ms var(--ease); }
+.avatar-edit:active { transform: scale(0.95); }
+.avatar-badge {
+  position: absolute; right: -4px; bottom: -4px; width: 28px; height: 28px; border-radius: 50%;
+  display: grid; place-items: center; border: 3px solid var(--ground);
+  background: var(--primary-bg); color: var(--primary-ink);
+}
+.avatar-badge svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+.avatar.big { width: 120px; height: 120px; font-size: 40px; }
+.avatar-preview { display: grid; place-items: center; margin: 22px 0 4px; }
+.avatar-err { text-align: center; }
+.rows.account { margin-top: 22px; }
+.rows.account + .search-hint { margin-top: 8px; }
+.rows .tap { padding: 0; }
+.rows .tap button {
+  display: flex; align-items: center; gap: 12px; width: 100%; padding: 15px 14px 15px 18px;
+  font-size: 15px; text-align: left; transition: background-color 150ms var(--ease);
+}
+.rows .tap button:active { background: var(--press); }
+.rows .tap b, .rows .locked b { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rows .locked { align-items: center; }
+.rows b.unset { color: var(--faint); font-weight: 400; }
+.rows li svg { flex: none; width: 18px; height: 18px; fill: none; stroke: var(--faint); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.rows .locked svg { width: 16px; height: 16px; margin-left: -8px; }
+.nick-form { margin-top: 18px; }
+.nick-form .btn { margin-top: 14px; }
 .profile-head p { margin-top: 2px; font-size: 14px; color: var(--muted); }
+/* friends */
+.friend-search { display: flex; gap: 8px; margin-top: 18px; }
+.friend-search input {
+  flex: 1; min-width: 0; height: 44px; padding: 0 16px; border: 0; border-radius: 999px;
+  background: var(--surface); color: var(--text); font: inherit; font-size: 16px;
+  box-shadow: inset 0 0 0 1px var(--dash); /* taste-skill-ignore: a field border drawn inside */
+}
+.friend-search input:focus { box-shadow: inset 0 0 0 2px var(--accent); } /* taste-skill-ignore: focus ring */
+.friend-search input::placeholder { color: var(--faint); }
+.friend-search .btn { height: 44px; }
+.search-hint { margin-top: 8px; font-size: 13px; line-height: 1.5; color: var(--faint); }
+.search-hint b { color: var(--muted); font-weight: 600; }
+#friend-result .note { margin-top: 12px; }
+
+.people { list-style: none; margin-top: 10px; border-radius: var(--radius-card); background: var(--surface); overflow: hidden; }
+.people.found { margin-top: 12px; }
+.person { display: flex; align-items: center; gap: 12px; min-height: 66px; padding: 10px 14px 10px 12px; }
+.person + .person { border-top: 1px solid var(--ground); }
+.person[data-friend] { cursor: pointer; transition: background-color 150ms var(--ease); }
+.person[data-friend]:active { background: var(--press); }
+.person .avatar { width: 44px; height: 44px; font-size: 15px; }
+.person-text { flex: 1; min-width: 0; }
+.person-text b { display: block; font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.person-text span { display: block; margin-top: 2px; font-size: 13px; color: var(--muted); line-height: 1.35; }
+.person-now { display: block; margin-top: 3px; font-style: normal; color: var(--text); }
+.person > svg { flex: none; width: 18px; height: 18px; fill: none; stroke: var(--faint); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.person-actions { flex: none; display: flex; gap: 6px; }
+.person-state { font-size: 13px; color: var(--faint); white-space: nowrap; }
+.now-dot { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--c); vertical-align: 1px; }
+
+.btn-sm {
+  height: 34px; padding: 0 12px; border-radius: 999px; background: var(--raised); color: var(--text);
+  font-size: 13px; font-weight: 600; white-space: nowrap; transition: transform 150ms var(--ease), opacity 150ms var(--ease);
+}
+.btn-sm.primary { background: var(--primary-bg); color: var(--primary-ink); }
+.btn-sm:active { transform: scale(0.96); }
+.btn-sm:disabled { opacity: 0.5; }
+.btn-text { display: block; width: 100%; margin-top: 18px; padding: 12px; font-size: 15px; font-weight: 500; text-align: center; }
+.btn-text.danger { color: #e5484d; }
+
+/* the pop-up when someone wants to add you: slides down from the top */
+.notice {
+  position: fixed; z-index: 45; left: 12px; right: 12px; top: calc(10px + var(--top-inset));
+  max-width: 520px; margin: 0 auto; padding: 14px; border-radius: 22px;
+  background: var(--surface); border: 1px solid var(--st-border);
+  box-shadow: var(--st-glow); /* taste-skill-ignore: a floating notice */
+  animation: notice-in 420ms cubic-bezier(0.2, 1.2, 0.3, 1) both;
+}
+.notice.out { animation: notice-out 240ms var(--ease) both; }
+.notice-body { display: flex; align-items: center; gap: 12px; }
+.notice-avatar { width: 52px; height: 52px; font-size: 18px; }
+.notice-text { flex: 1; min-width: 0; }
+.notice-text span { display: block; font-size: 13px; color: var(--muted); }
+.notice-text b { display: block; margin-top: 1px; font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.notice-text small { display: block; font-size: 13px; color: var(--faint); }
+.notice-close { flex: none; align-self: flex-start; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 999px; color: var(--faint); }
+.notice-close svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.notice-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+.notice-actions .btn-sm { height: 40px; font-size: 14px; }
+@keyframes notice-in { from { opacity: 0; transform: translateY(-120%); } }
+@keyframes notice-out { to { opacity: 0; transform: translateY(-120%); } }
+
+/* the flame: lit when both pressed it today; its number is the streak */
+.flame {
+  flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 3px;
+  min-width: 42px; height: 38px; padding: 0 10px 0 8px; border-radius: 999px;
+  background: var(--raised); color: var(--faint); font-size: 14px; font-weight: 700;
+  transition: background-color 200ms var(--ease), color 200ms var(--ease), transform 150ms var(--ease);
+}
+.flame:active { transform: scale(0.92); }
+.flame svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linejoin: round; }
+.flame b { font-variant-numeric: tabular-nums; color: var(--text); }
+.flame.off b, .flame.alive b { color: var(--muted); }
+.flame.mine, .flame.theirs { color: var(--hue-orange); }
+.flame.theirs { box-shadow: inset 0 0 0 1.5px var(--hue-orange); animation: flame-call 1.8s ease-in-out infinite; } /* taste-skill-ignore: your turn, tied to live state */
+.flame.lit { background: color-mix(in srgb, var(--hue-orange) 22%, var(--raised)); color: var(--hue-orange); }
+.flame.lit .outer { fill: var(--hue-orange); }
+.flame.lit .core { fill: var(--hue-yellow); stroke: var(--hue-yellow); }
+.flame.big { height: 44px; min-width: 52px; margin-left: auto; font-size: 16px; }
+.flame.big svg { width: 26px; height: 26px; }
+.flame.ignite svg { animation: ignite 650ms cubic-bezier(0.2, 1.5, 0.3, 1); }
+.flame.grew b { animation: grew 600ms cubic-bezier(0.2, 1.6, 0.3, 1); display: inline-block; }
+@keyframes ignite { 0% { transform: scale(0.5); } 45% { transform: scale(1.4) rotate(-10deg); } 100% { transform: none; } }
+@keyframes grew { 0% { transform: translateY(6px) scale(0.6); opacity: 0; } 100% { transform: none; opacity: 1; } }
+@keyframes flame-call { 0%, 100% { transform: none; } 50% { transform: scale(1.06); } }
+.flame-line { margin-top: 10px; font-size: 13px; line-height: 1.45; color: var(--muted); }
+.friend-head { align-items: center; }
+.friend-head > div { flex: 1; min-width: 0; }
+
+/* a friend's week in the sheet */
+.friend-head .avatar { width: 48px; height: 48px; font-size: 17px; }
+.fdays { display: grid; grid-template-columns: repeat(auto-fit, minmax(44px, 1fr)); gap: 6px; margin-top: 16px; }
+.fday {
+  height: 56px; border-radius: 14px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  font-size: 12px; color: var(--faint); transition: background-color 150ms var(--ease);
+}
+.fday b { font-size: 16px; font-weight: 600; color: var(--text); }
+.fday.today b { color: var(--accent); }
+.fday[aria-pressed="true"] { background: var(--raised); }
+.sheet .pairs { margin-top: 14px; }
+.pair.running { box-shadow: inset 0 0 0 1.5px var(--c); } /* taste-skill-ignore: the pair running now */
+
+/* semester progress: one segment per week */
+.sem-card { margin-top: 20px; padding: 18px 18px 16px; border-radius: var(--radius-card); background: var(--surface); }
+.sem-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.sem-head span { font-size: 14px; font-weight: 500; color: var(--muted); }
+.sem-week {
+  display: inline-block; margin-left: 6px; padding: 2px 8px; border-radius: 999px;
+  background: var(--raised); color: var(--text); font-size: 12px; font-style: normal; font-weight: 600; vertical-align: 1px;
+}
+.sem-head b { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; transition: color 300ms var(--ease); }
+.sem-bar { display: flex; gap: 3px; margin-top: 12px; padding: 4px 0; }
+.sem-bar i {
+  flex: 1; height: 12px; border-radius: 4px; background: var(--raised); cursor: pointer; transform-origin: center;
+  transition: background-color 500ms cubic-bezier(0.34, 1.56, 0.64, 1) var(--d), transform 500ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.sem-bar i.on { background: var(--seg); }
+.sem-bar i.picked { box-shadow: 0 0 0 2px var(--ground), 0 0 0 3.5px var(--text); } /* taste-skill-ignore: a selection ring */
+.sem-sub { margin-top: 10px; font-size: 13px; line-height: 1.5; color: var(--muted); }
+
 .view-title { margin-top: 26px; font-size: var(--fs-title); font-weight: 600; }
 
 .rows { list-style: none; margin-top: 18px; border-radius: var(--radius-card); background: var(--surface); overflow: hidden; }

@@ -58,6 +58,20 @@ CREATE TABLE IF NOT EXISTS reminders (
     UNIQUE (tg_id, date, start, subject)
 );
 CREATE INDEX IF NOT EXISTS reminders_due ON reminders(sent_at, remind_at);
+CREATE TABLE IF NOT EXISTS friendships (
+    requester   INTEGER NOT NULL REFERENCES users(tg_id),
+    addressee   INTEGER NOT NULL REFERENCES users(tg_id),
+    status      TEXT NOT NULL DEFAULT 'pending',   -- pending | accepted
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (requester, addressee)
+);
+CREATE INDEX IF NOT EXISTS friendships_by_addressee ON friendships(addressee, status);
+CREATE TABLE IF NOT EXISTS flame_taps (
+    tapper      INTEGER NOT NULL REFERENCES users(tg_id),  -- who pressed the flame
+    friend      INTEGER NOT NULL REFERENCES users(tg_id),  -- on whose row
+    day         TEXT NOT NULL,                             -- ISO date, Moscow time
+    PRIMARY KEY (tapper, friend, day)
+);
 CREATE TABLE IF NOT EXISTS open_buttons (
     chat_id     INTEGER NOT NULL,       -- the bot's messages carrying an "open the app" button
     message_id  INTEGER NOT NULL,
@@ -97,6 +111,8 @@ MIGRATIONS = {
         ("digest_time", "TEXT"),                         # HH:MM of the morning summary, NULL = off
         ("digest_sent_on", "TEXT"),                      # ISO date of the last summary sent
         ("cal_token", "TEXT"),                           # secret of the calendar subscription link
+        ("nickname", "TEXT"),                            # the name friends see, NULL = the real name
+        ("avatar", "TEXT"),                              # file name (no extension) of an uploaded photo in data/avatars
     ],
     "reminders": [
         ("lead", "INTEGER NOT NULL DEFAULT 10"),

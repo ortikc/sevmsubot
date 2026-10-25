@@ -26,6 +26,7 @@ const state = {
   profileView: "profile",
   scheduleView: "day",  // "day", "week" or "stats" inside the schedule tab
   settings: null,       // the bot's settings for this student, loaded with the settings view
+  friends: null,        // { friends, incoming, outgoing }
   ob: null,             // onboarding draft
   reminders: new Map(), // "date|start|subject" -> reminder
   liveSig: "",          // which pair the lead card shows, to know when to redraw
@@ -95,6 +96,8 @@ const icon = {
   left: svg('<path d="M14.5 5.5 8 12l6.5 6.5"/>'),
   right: svg('<path d="M9.5 5.5 16 12l-6.5 6.5"/>'),
   check: svg('<path d="M5 12.5 10 17.5 19 7"/>'),
+  camera: svg('<path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2L9 5h6l1.5 2h2A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5Z"/><circle cx="12" cy="12.6" r="3.2"/>'),
+  lock: svg('<rect x="5.5" y="10.5" width="13" height="9.5" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>'),
 };
 
 /* ---------- subjects: one colour and one drawn mark per discipline ----------
@@ -164,7 +167,7 @@ class HttpError extends Error {
   constructor(status, msg) { super(msg); this.status = status; }
 }
 async function api(path, opts = {}) {
-  const headers = { "Content-Type": "application/json" };
+  const headers = { "Content-Type": opts.body instanceof Blob ? opts.body.type || "application/octet-stream" : "application/json" };
   if (inTelegram) headers["X-Init-Data"] = tg.initData;
   const res = await fetch(path, { ...opts, headers });
   if (!res.ok) {
@@ -235,10 +238,12 @@ async function resolveAvatar(me) {
     if (res.ok) avatarUrl = URL.createObjectURL(await res.blob());
   } catch (_) {}
 }
-function avatarHtml(me) {
-  const ini = esc(initials(me.real_name || `${me.first_name} ${me.last_name}`));
+/** the name friends see: the nickname if there is one, else the real name */
+const myName = (me) => me.nickname || me.real_name || [me.first_name, me.last_name].filter(Boolean).join(" ");
+function avatarHtml(me, cls = "") {
+  const ini = esc(initials(myName(me)));
   const img = avatarUrl ? `<img src="${esc(avatarUrl)}" alt="" onerror="this.parentNode.textContent=this.parentNode.dataset.i">` : "";
-  return `<span class="avatar" data-i="${ini}" aria-hidden="true">${img || ini}</span>`;
+  return `<span class="avatar ${cls}" data-i="${ini}" aria-hidden="true">${img || ini}</span>`;
 }
 
 /* ---------- shell ---------- */
@@ -464,7 +469,7 @@ function renderOnboarding() {
       <li><button data-group="${g.id}" aria-pressed="${ob.group?.id === g.id}"><span>${esc(g.name)}</span>${icon.right}</button></li>`).join("")}</ul>`;
   } else {
     title = "Как вас зовут?";
-    lead = "Настоящие имя и фамилия. Их видите только вы, в своём профиле.";
+    lead = "Настоящие имя и фамилия. Их увидят друзья, а если хотите другое имя, задайте ник в профиле.";
     body = `
       <div class="field">
         <label for="name">Имя и фамилия</label>
@@ -1354,7 +1359,11 @@ function updateProfileBody() {
   bindProfileBody();
 }
 function bindProfileBody() {
+  bindSemester();
+  bindFriends();
   document.getElementById("edit-profile")?.addEventListener("click", () => { haptic(); startOnboarding(true); });
+  document.getElementById("edit-nick")?.addEventListener("click", openNickSheet);
+  document.getElementById("edit-avatar")?.addEventListener("click", openAvatarSheet);
   app.querySelectorAll("[data-theme-pref]").forEach((b) => b.addEventListener("click", (e) => {
     haptic();
     switchTheme(b.dataset.themePref, e.clientX, e.clientY);
@@ -1379,6 +1388,453 @@ function bindProfileBody() {
     const url = `https://t.me/${DEVELOPER}`;
     if (tg?.openTelegramLink && inTelegram) tg.openTelegramLink(url); else window.open(url, "_blank");
   });
+}
+
+/* ---------- nickname and photo: what friends see, changeable any time ---------- */
+
+function openNickSheet() {
+  haptic();
+  const me = state.me;
+  openSheet(`
+    <div class="sheet-head"><div>
+      <h2 id="sheet-title">Ник</h2>
+      <p>Так вас видят друзья: в списке, в заявках и в карточке. Без ника видно ваше имя.</p>
+    </div></div>
+    <form class="field nick-form" id="nick-form" autocomplete="off" novalidate>
+      <input id="nick" maxlength="32" autocapitalize="off" spellcheck="false" enterkeyhint="done" aria-label="Ник"
+             placeholder="${esc(me.real_name || "Ваш ник")}" value="${esc(me.nickname || "")}">
+      <p class="err" id="nick-err" hidden></p>
+      <button class="btn" type="submit">Сохранить</button>
+    </form>
+    ${me.nickname ? `<button class="btn-text" id="nick-clear">Убрать ник и показывать имя</button>` : ""}`, (panel) => {
+    const form = panel.querySelector("#nick-form");
+    const input = form.querySelector("#nick");
+    const err = form.querySelector("#nick-err");
+    const save = async (nickname) => {
+      const btn = form.querySelector(".btn");
+      btn.disabled = true;
+      try {
+        state.me = await api("/api/profile/nickname", { method: "POST", body: JSON.stringify({ nickname }) });
+        haptic("success");
+        closeSheet();
+        updateProfileBody();
+      } catch (e) {
+        btn.disabled = false;
+        err.textContent = e instanceof HttpError && e.status === 400 ? e.message : "Не получилось сохранить. Проверьте интернет.";
+        err.hidden = false;
+        haptic("error");
+      }
+    };
+    input.addEventListener("input", () => { err.hidden = true; });
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const nick = input.value.trim().replace(/\s+/g, " ");
+      if (nick.length === 1) { err.textContent = "Хотя бы два символа."; err.hidden = false; haptic("error"); return; }
+      input.blur();
+      save(nick);
+    });
+    panel.querySelector("#nick-clear")?.addEventListener("click", () => save(""));
+  });
+}
+
+/** the middle square of a photo, as a JPEG small enough to send */
+async function squareJpeg(file, size = 512) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, fail) => {
+      const i = new Image();
+      i.onload = () => ok(i);
+      i.onerror = fail;
+      i.src = url;
+    });
+    const side = Math.min(img.naturalWidth, img.naturalHeight);
+    const canvas = Object.assign(document.createElement("canvas"), { width: size, height: size });
+    canvas.getContext("2d").drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, size, size);
+    return await new Promise((ok) => canvas.toBlob(ok, "image/jpeg", 0.9));
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function openAvatarSheet() {
+  haptic();
+  let picked = null; // { blob, url }: the cropped photo waiting for "Сохранить"
+  const forget = () => { if (picked) URL.revokeObjectURL(picked.url); picked = null; };
+  const draw = (note = "") => {
+    const me = state.me;
+    const preview = picked
+      ? `<span class="avatar big"><img src="${picked.url}" alt=""></span>`
+      : avatarHtml(me, "big");
+    openSheet(`
+      <div class="sheet-head"><div>
+        <h2 id="sheet-title">Фото профиля</h2>
+        <p>Его видят друзья. Фото обрезается до круга по центру.</p>
+      </div></div>
+      <div class="avatar-preview">${preview}</div>
+      <input type="file" id="avatar-file" accept="image/*" hidden>
+      <p class="err avatar-err" ${note ? "" : "hidden"}>${esc(note)}</p>
+      <div class="sheet-actions">
+        ${picked
+          ? `<button class="btn" id="avatar-save">Сохранить</button><button class="btn secondary" id="avatar-pick">Выбрать другое</button>`
+          : `<button class="btn" id="avatar-pick">Выбрать фото</button>`}
+      </div>
+      ${!picked && me.custom_avatar ? `<button class="btn-text" id="avatar-reset">Вернуть фото из Telegram</button>` : ""}`, (panel) => {
+      const file = panel.querySelector("#avatar-file");
+      panel.querySelector("#avatar-pick").addEventListener("click", () => { haptic(); file.click(); });
+      file.addEventListener("change", async () => {
+        const f = file.files[0];
+        if (!f) return;
+        try {
+          const blob = await squareJpeg(f);
+          forget();
+          picked = { blob, url: URL.createObjectURL(blob) };
+          draw();
+        } catch (_) {
+          draw("Не получилось открыть это фото. Выберите другое.");
+        }
+      });
+      panel.querySelector("#avatar-save")?.addEventListener("click", async (e) => {
+        e.currentTarget.disabled = true;
+        e.currentTarget.textContent = "Сохраняем…";
+        if (await saveAvatar(() => api("/api/profile/avatar", { method: "POST", body: picked.blob }), draw)) forget();
+      });
+      panel.querySelector("#avatar-reset")?.addEventListener("click", () =>
+        saveAvatar(() => api("/api/profile/avatar", { method: "DELETE" }), draw));
+    });
+  };
+  draw();
+}
+
+async function saveAvatar(request, redraw) {
+  try {
+    state.me = await request();
+    avatarUrl = null;
+    await resolveAvatar(state.me);
+    haptic("success");
+    closeSheet();
+    updateProfileBody();
+    return true;
+  } catch (e) {
+    haptic("error");
+    redraw(e instanceof HttpError && e.status === 400 ? e.message : "Не получилось сохранить фото. Проверьте интернет.");
+    return false;
+  }
+}
+
+/* ---------- the flame: a streak of days on which both friends pressed it ---------- */
+
+const FLAME_PATH = '<path class="outer" d="M12 21.5C8.4 21.5 5.5 18.9 5.5 15.3c0-2.4 1.2-4.4 2.8-6 .2 1.4.9 2.5 2 3-.4-3.7 1.3-7 4.1-9.7.1 3.2 1.6 5 2.9 6.8.9 1.4 1.2 3.2 1.2 5.9 0 3.6-2.9 6.2-6.5 6.2Z"/>'
+  + '<path class="core" d="M12 21.5c-1.6 0-2.6-1.2-2.6-2.7 0-1.6 1.2-2.8 2.2-4 .3 1.2 1 1.8 1.8 2.1.8.4 1.2 1.1 1.2 1.9 0 1.5-1 2.7-2.6 2.7Z"/>';
+const dayCount = (n) => `${n} ${plural(n, "день", "дня", "дней")}`;
+
+function flameState(f) {
+  if (!f) return "off";
+  if (f.me_today && f.friend_today) return "lit";
+  if (f.me_today) return "mine";
+  if (f.friend_today) return "theirs";
+  return f.streak > 0 ? "alive" : "off";
+}
+
+function flameText(f) {
+  const st = flameState(f);
+  const n = f?.streak || 0;
+  return {
+    lit: `Серия ${dayCount(n)}. Сегодня огонёк зажгли оба`,
+    mine: n ? `Серия ${dayCount(n)}. Вы зажгли, ждём друга` : "Вы зажгли огонёк, ждём друга",
+    theirs: "Друг уже зажёг огонёк, ваша очередь",
+    alive: `Серия ${dayCount(n)}. Сегодня ещё не зажигали, погаснет в полночь`,
+    off: "Зажгите огонёк, и если друг сделает то же сегодня, начнётся серия",
+  }[st];
+}
+
+function flameButton(p, cls = "") {
+  const f = p.flame || { streak: 0 };
+  return `<button class="flame ${flameState(f)} ${cls}" data-flame="${p.tg_id}" aria-label="${esc(flameText(f))}">
+    ${svg(FLAME_PATH)}${f.streak ? `<b class="num">${f.streak}</b>` : ""}</button>`;
+}
+
+async function pressFlame(id) {
+  const p = state.friends?.friends.find((x) => x.tg_id === id);
+  if (!p) return;
+  const before = p.flame?.streak || 0;
+  if (p.flame?.me_today) { haptic(); igniteButtons(id, false); return; } // already lit today: just a flicker
+  haptic("success");
+  try {
+    p.flame = await api(`/api/friends/${id}/flame`, { method: "POST" });
+  } catch (_) {
+    haptic("error");
+    tg?.showAlert?.("Не получилось зажечь огонёк. Проверьте интернет.");
+    return;
+  }
+  igniteButtons(id, p.flame.streak > before);
+}
+
+/** redraw every flame button for this friend (the list and the sheet) and play the ignite */
+function igniteButtons(id, grew) {
+  const p = state.friends.friends.find((x) => x.tg_id === id);
+  document.querySelectorAll(`[data-flame="${id}"]`).forEach((b) => {
+    const big = b.classList.contains("big");
+    b.outerHTML = flameButton(p, `${big ? "big" : ""} ignite ${grew ? "grew" : ""}`);
+  });
+  document.querySelectorAll(`[data-flame-text="${id}"]`).forEach((el) => { el.textContent = flameText(p.flame); });
+  bindFlames(document);
+}
+
+function bindFlames(root) {
+  root.querySelectorAll("[data-flame]").forEach((b) => {
+    if (b.dataset.bound) return;
+    b.dataset.bound = "1";
+    b.addEventListener("click", (e) => { e.stopPropagation(); pressFlame(Number(b.dataset.flame)); });
+    b.addEventListener("keydown", (e) => e.stopPropagation());
+  });
+}
+
+/* ---------- friends ---------- */
+
+const FRIENDS_POLL = 30 * 1000;
+const noticeShown = new Set(); // requests already shown as a pop-up this session
+
+async function loadFriends() {
+  try {
+    state.friends = await api("/api/friends");
+  } catch (_) {
+    return;
+  }
+  showFriendNotice();
+  if (state.tab === "profile" && state.profileView === "friends" && !document.activeElement?.matches?.("#friend-q")) {
+    updateProfileBody();
+  }
+}
+
+function personAvatar(p, cls = "") {
+  const ini = esc(initials(p.name));
+  const img = p.photo_url ? `<img src="${esc(p.photo_url)}" alt="" onerror="this.parentNode.textContent=this.parentNode.dataset.i">` : "";
+  return `<span class="avatar ${cls}" data-i="${ini}" aria-hidden="true">${img || ini}</span>`;
+}
+const direction = (p) => (p.faculty ? `${p.faculty}${p.is_master ? ", магистратура" : ""}` : "");
+/** the direction and course, for lists; the full line with the group, for cards */
+const dirLine = (p) => [direction(p), p.course ? `${p.course} курс` : ""].filter(Boolean).join(" · ");
+const groupLine = (p) => [direction(p), p.group, p.course ? `${p.course} курс` : ""].filter(Boolean).join(" · ");
+
+/** a friend's "right now", in one line */
+function nowLine(n) {
+  if (!n || n.state === "unknown") return "";
+  if (n.state === "free") return "Сегодня пар нет";
+  if (n.state === "done") return "Пары на сегодня закончились";
+  const room = n.room ? ` · ауд. ${esc(n.room)}` : "";
+  const dot = `<i class="now-dot" style="${hueVar(n.subject)}"></i>`;
+  return n.state === "now"
+    ? `${dot}Сейчас: ${esc(n.subject)}${room} · до ${clock(n.end)}`
+    : `${dot}В ${clock(n.start)}: ${esc(n.subject)}${room}`;
+}
+
+function personRow(p, sub, actions = "", attrs = "") {
+  return `
+    <li class="person" ${attrs}>
+      ${personAvatar(p)}
+      <div class="person-text"><b>${esc(p.name)}</b><span>${sub}</span></div>
+      ${actions ? `<div class="person-actions">${actions}</div>` : ""}
+    </li>`;
+}
+
+const actionButton = (act, id, label, kind = "") => `<button class="btn-sm ${kind}" data-act="${act}" data-id="${id}">${label}</button>`;
+
+function friendsView() {
+  const f = state.friends;
+  const me = state.me;
+  const hint = me.username
+    ? `Ваш тег <b>@${esc(me.username)}</b>: по нему друзья найдут вас.`
+    : "У вас нет тега в Telegram. Задайте его в настройках Telegram, иначе друзья не смогут вас найти.";
+  const search = `
+    <form class="friend-search" id="friend-search" autocomplete="off">
+      <input id="friend-q" name="q" type="search" inputmode="text" autocapitalize="off" spellcheck="false"
+             enterkeyhint="search" placeholder="@тег в Telegram" aria-label="Тег друга в Telegram">
+      <button class="btn inline" type="submit">Найти</button>
+    </form>
+    <p class="search-hint">${hint}</p>
+    <div id="friend-result" aria-live="polite"></div>`;
+
+  if (!f) {
+    loadFriends();
+    return `<h1 class="view-title">Друзья</h1>${search}<p class="options-note">Загружаем друзей…</p>`;
+  }
+  const incoming = f.incoming.length ? `
+    <h2 class="group-label">Хотят добавить вас</h2>
+    <ul class="people">${f.incoming.map((p) => personRow(p, esc(groupLine(p)),
+      actionButton("accept", p.tg_id, "Принять", "primary") + actionButton("decline", p.tg_id, "Отклонить"))).join("")}</ul>` : "";
+  const friends = f.friends.length ? `
+    <h2 class="group-label">Друзья · ${f.friends.length}</h2>
+    <ul class="people">${f.friends.map((p) => personRow(p,
+      `${esc(dirLine(p))}${nowLine(p.now) ? `<em class="person-now">${nowLine(p.now)}</em>` : ""}`, flameButton(p),
+      `role="button" tabindex="0" data-friend="${p.tg_id}"`)).join("")}</ul>
+    <p class="search-hint">Огонёк: нажимайте его каждый день, и если друг тоже нажмёт в тот же день, серия растёт. Пропустите день, и она погаснет.</p>` : "";
+  const outgoing = f.outgoing.length ? `
+    <h2 class="group-label">Вы отправили заявку</h2>
+    <ul class="people">${f.outgoing.map((p) => personRow(p, esc(groupLine(p)),
+      actionButton("cancel", p.tg_id, "Отменить"))).join("")}</ul>` : "";
+  const empty = !f.friends.length && !f.incoming.length && !f.outgoing.length
+    ? emptyState("friends", "Друзей пока нет", "Найдите однокурсника по тегу в Telegram, и после того как он примет заявку, вы увидите, где у него пары.")
+    : "";
+  return `<h1 class="view-title">Друзья</h1>${search}${incoming}${friends}${outgoing}${empty}`;
+}
+
+function bindFriends() {
+  const form = document.getElementById("friend-search");
+  if (!form) return;
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const q = form.q.value.trim();
+    const out = document.getElementById("friend-result");
+    if (!q) return;
+    form.q.blur();
+    out.innerHTML = `<p class="options-note">Ищем…</p>`;
+    try {
+      const r = await api(`/api/users/find?username=${encodeURIComponent(q)}`);
+      if (!r.user) {
+        out.innerHTML = `<p class="note"><strong>Никого не нашли</strong>Проверьте тег. Найти можно только тех, кто уже открывал это приложение.</p>`;
+        return;
+      }
+      const p = r.user;
+      const action = {
+        none: actionButton("add", p.tg_id, "Добавить", "primary"),
+        outgoing: `<span class="person-state">Заявка отправлена</span>`,
+        incoming: actionButton("accept", p.tg_id, "Принять", "primary"),
+        friend: `<span class="person-state">В друзьях</span>`,
+        self: `<span class="person-state">Это вы</span>`,
+      }[r.relation];
+      out.innerHTML = `<ul class="people found">${personRow(p, esc(groupLine(p)), action)}</ul>`;
+      bindPeopleActions(out);
+    } catch (err) {
+      out.innerHTML = `<p class="note">${err instanceof HttpError && err.status === 400 ? esc(err.message) : "Не получилось найти. Проверьте интернет."}</p>`;
+    }
+  });
+  bindPeopleActions(app);
+  bindFlames(app);
+  app.querySelectorAll("[data-friend]").forEach((el) => {
+    const open = () => openFriendSheet(state.friends.friends.find((p) => p.tg_id === Number(el.dataset.friend)));
+    el.addEventListener("click", open);
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
+  });
+}
+
+function bindPeopleActions(root) {
+  root.querySelectorAll("[data-act]").forEach((b) => b.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const id = Number(b.dataset.id);
+    b.disabled = true;
+    await friendAction(b.dataset.act, id);
+  }));
+}
+
+async function friendAction(act, id) {
+  haptic();
+  try {
+    if (act === "add") await api(`/api/friends/${id}`, { method: "POST" });
+    else if (act === "accept") await api(`/api/friends/${id}/accept`, { method: "POST" });
+    else await api(`/api/friends/${id}`, { method: "DELETE" }); // decline, cancel or remove
+    haptic("success");
+  } catch (_) {
+    haptic("error");
+    tg?.showAlert?.("Не получилось. Проверьте интернет и попробуйте ещё раз.");
+  }
+  await loadFriends();
+  if (state.tab === "profile" && state.profileView === "friends") updateProfileBody();
+}
+
+/* the pop-up when someone wants to add you */
+function showFriendNotice() {
+  if (state.ob || !state.friends || document.getElementById("friend-notice")) return;
+  const p = state.friends.incoming.find((x) => !noticeShown.has(x.tg_id));
+  if (!p) return;
+  noticeShown.add(p.tg_id);
+  haptic("success");
+  const el = document.createElement("div");
+  el.id = "friend-notice";
+  el.className = "notice";
+  el.setAttribute("role", "alertdialog");
+  el.setAttribute("aria-label", "Заявка в друзья");
+  el.innerHTML = `
+    <div class="notice-body">
+      ${personAvatar(p, "notice-avatar")}
+      <div class="notice-text"><span>Вас хочет добавить в друзья</span><b>${esc(p.name)}</b><small>${esc(groupLine(p))}</small></div>
+      <button class="notice-close" aria-label="Решить позже">${svg('<path d="M6 6l12 12M18 6 6 18"/>')}</button>
+    </div>
+    <div class="notice-actions">
+      <button class="btn-sm primary" data-n="accept">Принять</button>
+      <button class="btn-sm" data-n="decline">Отклонить</button>
+    </div>`;
+  document.body.append(el);
+  const close = () => {
+    el.classList.add("out");
+    setTimeout(() => { el.remove(); showFriendNotice(); }, 260);
+  };
+  el.querySelector(".notice-close").addEventListener("click", close);
+  el.querySelectorAll("[data-n]").forEach((b) => b.addEventListener("click", async () => {
+    el.querySelectorAll("button").forEach((x) => (x.disabled = true));
+    close();
+    await friendAction(b.dataset.n === "accept" ? "accept" : "decline", p.tg_id);
+  }));
+}
+
+/* a friend's pairs, by day of the current week */
+async function openFriendSheet(p) {
+  if (!p) return;
+  haptic();
+  const t = now();
+  const ws = mondayOf(t.iso);
+  let selected = dateOf(t.iso).getDay() === 0 ? ws : t.iso; // on Sunday, start from Monday
+  const head = () => {
+    const cur = state.friends?.friends.find((x) => x.tg_id === p.tg_id) || p;
+    return `
+    <div class="sheet-head friend-head">
+      ${personAvatar(p)}
+      <div><h2 id="sheet-title">${esc(p.name)}</h2><p>${esc(groupLine(p))}</p></div>
+      ${flameButton(cur, "big")}
+    </div>
+    <p class="flame-line" data-flame-text="${p.tg_id}">${esc(flameText(cur.flame))}</p>`;
+  };
+  openSheet(`${head()}<p class="options-note">Загружаем расписание…</p>`);
+  let lessons;
+  try {
+    lessons = (await api(`/api/friends/${p.tg_id}/schedule?start=${ws}&end=${addDays(ws, 6)}`)).lessons;
+  } catch (_) {
+    openSheet(`${head()}<p class="note">Не получилось загрузить расписание друга. Проверьте интернет.</p>`);
+    return;
+  }
+  const byDay = (iso) => lessons.filter((l) => l.date === iso);
+  const draw = () => {
+    const days = Array.from({ length: 7 }, (_, i) => addDays(ws, i)).filter((iso, i) => i < 6 || byDay(iso).length);
+    const chips = days.map((iso) => {
+      const d = dateOf(iso);
+      return `<button class="fday ${iso === t.iso ? "today" : ""}" data-fday="${iso}" aria-pressed="${iso === selected}">
+        ${WD_SHORT[d.getDay()]}<b class="num">${d.getDate()}</b></button>`;
+    }).join("");
+    const list = byDay(selected);
+    const rows = list.length ? list.map((l) => {
+      const past = selected < t.iso || (selected === t.iso && t.min >= toMin(l.end));
+      const running = selected === t.iso && t.min >= toMin(l.start) && t.min < toMin(l.end);
+      return `
+        <li class="pair ${past ? "past" : ""} ${running ? "running" : ""}" style="${hueVar(l.subject)}">
+          <span class="t">${clock(l.start)}<br>${clock(l.end)}</span>
+          <div><h3>${esc(l.subject)}</h3><p>${esc(kindName(l.kind))}${l.room ? ` · <b>ауд. ${esc(l.room)}</b>` : ""}${running ? " · <b>идёт сейчас</b>" : ""}</p></div>
+          ${markSvg(l.subject)}
+        </li>`;
+    }).join("") : "";
+    openSheet(`${head()}
+      <div class="fdays">${chips}</div>
+      ${rows ? `<ul class="pairs">${rows}</ul>` : `<p class="note"><strong>Пар нет</strong>${dayTitle(selected)}: свободный день.</p>`}
+      <button class="btn-text danger" id="unfriend">Удалить из друзей</button>`, (panel) => {
+      panel.querySelectorAll("[data-fday]").forEach((b) => b.addEventListener("click", () => { haptic(); selected = b.dataset.fday; draw(); }));
+      bindFlames(panel);
+      const un = panel.querySelector("#unfriend");
+      un.addEventListener("click", async () => {
+        if (!un.dataset.sure) { un.dataset.sure = "1"; un.textContent = "Точно удалить? Нажмите ещё раз"; return; }
+        closeSheet();
+        await friendAction("remove", p.tg_id);
+      });
+    });
+  };
+  draw();
 }
 
 /* ---------- settings ---------- */
@@ -1549,17 +2005,131 @@ function switchTheme(pref, x, y) {
   )).catch(() => {});
 }
 
+/* ---------- semester progress: one segment per week, green to yellow to red towards the session ----------
+   The SegmentedProgress component (React) ported: segments fill one by one, the percentage counts up,
+   segments near the mouse lift, and a tapped segment shows its week. */
+
+// the autumn semester runs from 1 September to the winter session; change here when the dates change
+const SEMESTER = { start: "2026-09-01", session: "2027-01-03" };
+
+function semesterInfo(t = now()) {
+  const day = 86400000;
+  const start = dateOf(SEMESTER.start), session = dateOf(SEMESTER.session), today = dateOf(t.iso);
+  const total = Math.round((session - start) / day);
+  const elapsed = Math.min(total, Math.max(0, Math.round((today - start) / day)));
+  const weeks = Math.ceil(total / 7);
+  return {
+    total, elapsed, weeks,
+    pct: (elapsed / total) * 100,
+    week: Math.min(weeks, Math.floor(elapsed / 7) + 1),
+    left: total - elapsed,
+    started: today >= start,
+  };
+}
+
+/** a week's colour: green at the start of the semester, yellow in the middle, red by the session */
+function weekColour(i, n) {
+  const t = n > 1 ? i / (n - 1) : 0;
+  return t < 0.5
+    ? `color-mix(in oklab, var(--hue-yellow) ${Math.round(t * 200)}%, var(--hue-green))`
+    : `color-mix(in oklab, var(--hue-red) ${Math.round((t - 0.5) * 200)}%, var(--hue-yellow))`;
+}
+
+const shortDate = (d) => `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+
+function weekRangeText(i) {
+  const a = dateOf(addDays(SEMESTER.start, i * 7));
+  const lastDay = addDays(SEMESTER.session, -1);
+  const b = dateOf(addDays(SEMESTER.start, i * 7 + 6) < lastDay ? addDays(SEMESTER.start, i * 7 + 6) : lastDay);
+  return a.getMonth() === b.getMonth() ? `${a.getDate()}–${b.getDate()} ${MONTHS[a.getMonth()]}` : `${shortDate(a)} – ${shortDate(b)}`;
+}
+
+function semesterSummary(s) {
+  const session = shortDate(dateOf(SEMESTER.session));
+  if (!s.started) return `Семестр начнётся ${shortDate(dateOf(SEMESTER.start))}`;
+  if (s.left <= 0) return `Сессия началась ${session}`;
+  return `До сессии ${s.left} ${plural(s.left, "день", "дня", "дней")} · она начнётся ${session}`;
+}
+
+function semesterCard() {
+  const s = semesterInfo();
+  const filled = Math.round((s.pct / 100) * s.weeks);
+  const head = filled > 0 ? weekColour(filled - 1, s.weeks) : "var(--text)";
+  const segments = Array.from({ length: s.weeks }, (_, i) =>
+    `<i data-week="${i}" data-filled="${i < filled}" style="--seg:${weekColour(i, s.weeks)};--d:${i * 20}ms" aria-hidden="true"></i>`).join("");
+  return `
+    <section class="sem-card" aria-label="Прогресс семестра">
+      <div class="sem-head"><span>Прогресс семестра${s.started && s.left > 0 ? ` <em class="sem-week num">неделя ${s.week} из ${s.weeks}</em>` : ""}</span><b class="num" id="sem-pct" style="color:${head}" data-value="${s.pct.toFixed(1)}">0%</b></div>
+      <div class="sem-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(s.pct)}"
+           aria-valuetext="${Math.round(s.pct)}%, ${s.week}-я неделя из ${s.weeks}">${segments}</div>
+      <p class="sem-sub" id="sem-sub">${semesterSummary(s)}</p>
+    </section>`;
+}
+
+function bindSemester() {
+  const bar = app.querySelector(".sem-bar");
+  if (!bar) return;
+  const segs = [...bar.children];
+  const pct = document.getElementById("sem-pct");
+  const sub = document.getElementById("sem-sub");
+  const summary = sub.innerHTML;
+  const s = semesterInfo();
+  const target = Number(pct.dataset.value);
+
+  // fill one by one, and count the percentage up (ease-out cubic, 800 ms)
+  requestAnimationFrame(() => segs.forEach((el) => el.classList.toggle("on", el.dataset.filled === "true")));
+  if (reduceMotion.matches) pct.textContent = `${Math.round(target)}%`;
+  else {
+    const t0 = performance.now();
+    const step = (time) => {
+      const p = Math.min(1, (time - t0) / 800);
+      pct.textContent = `${Math.round(target * (1 - Math.pow(1 - p, 3)))}%`;
+      if (p < 1 && pct.isConnected) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  // the mouse lifts the segment under it and, less, its neighbours
+  const lift = (at) => segs.forEach((el, i) => {
+    const d = at === null ? 99 : Math.abs(at - i);
+    const k = d === 0 ? 1 : d <= 3 ? Math.cos((d / 3) * (Math.PI / 2)) : 0;
+    el.style.transform = k ? `scaleY(${1 + (d === 0 ? 0.3 : 0.2 * k)}) translateY(${-(d === 0 ? 1 : 0.5 * k)}px)` : "";
+  });
+  segs.forEach((el, i) => el.addEventListener("pointerenter", (e) => { if (e.pointerType === "mouse") lift(i); }));
+  bar.addEventListener("pointerleave", () => lift(null));
+
+  // a tap shows that week's dates; tapping it again goes back to the summary
+  let picked = null;
+  segs.forEach((el, i) => el.addEventListener("click", () => {
+    haptic();
+    picked = picked === i ? null : i;
+    segs.forEach((x, j) => x.classList.toggle("picked", j === picked));
+    if (picked === null) { sub.innerHTML = summary; return; }
+    const state = i + 1 < s.week ? "прошла" : i + 1 === s.week && s.started && s.left > 0 ? "идёт сейчас" : "впереди";
+    sub.innerHTML = `${i + 1}-я неделя · ${weekRangeText(i)} · ${state}`;
+  }));
+}
+
 function profileView() {
   const me = state.me, g = me.group;
   return `
     <div class="profile-head">
-      ${avatarHtml(me)}
+      <button class="avatar-edit" id="edit-avatar" aria-label="Сменить фото профиля">
+        ${avatarHtml(me)}<span class="avatar-badge" aria-hidden="true">${icon.camera}</span>
+      </button>
       <div>
-        <h1>${esc(me.real_name)}</h1>
+        <h1>${esc(myName(me))}</h1>
         <p>${me.username ? `@${esc(me.username)} · ` : ""}аккаунт Telegram</p>
       </div>
     </div>
+    <ul class="rows account">
+      <li class="tap"><button id="edit-nick"><span>Ник</span>${me.nickname ? `<b>${esc(me.nickname)}</b>` : `<b class="unset">не задан</b>`}${icon.right}</button></li>
+      <li class="locked"><span>Тег в Telegram</span><b>${me.username ? `@${esc(me.username)}` : "нет"}</b>${icon.lock}</li>
+    </ul>
+    <p class="search-hint">Ник и фото видят друзья, менять их можно когда угодно. Тег меняется только в самом Telegram: по нему вас находят.</p>
+    ${semesterCard()}
     <ul class="rows">
+      <li><span>Имя</span><b>${esc(me.real_name)}</b></li>
       <li><span>Направление</span><b>${esc(g.faculty)}${g.is_master ? ", магистратура" : ""}</b></li>
       <li><span>Курс</span><b class="num">${g.course}</b></li>
       <li><span>Группа</span><b>${esc(g.name)}</b></li>
@@ -1567,11 +2137,7 @@ function profileView() {
     <button class="btn secondary" id="edit-profile">Изменить учебные данные</button>`;
 }
 
-function friendsView() {
-  return `
-    <h1 class="view-title">Друзья</h1>
-    ${emptyState("friends", "Друзей пока нет", "Скоро здесь можно будет добавить однокурсников и посмотреть, где у них пары.")}`;
-}
+
 
 /* ---------- boot ---------- */
 
@@ -1587,6 +2153,8 @@ async function boot() {
     state.scheduleView = viewPref();
     if (!me.onboarded) startOnboarding(false);
     else await openSchedule();
+    loadFriends();
+    setInterval(() => { if (!state.ob && document.visibilityState === "visible") loadFriends(); }, FRIENDS_POLL);
   } catch (e) {
     console.error(e);
     renderError(e, boot);

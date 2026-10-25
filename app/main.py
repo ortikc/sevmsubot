@@ -7,6 +7,7 @@ import os
 import secrets
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import parse_qsl
 
@@ -15,6 +16,7 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
+from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
 from . import db, scraper
@@ -26,6 +28,12 @@ load_dotenv(ROOT / ".env")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 DEV_AUTH = os.getenv("DEV_AUTH") == "1"
+AVATARS = ROOT / "data" / "avatars"   # uploaded profile photos, named by a random token
+AVATARS.mkdir(parents=True, exist_ok=True)
+AVATAR_SIZE = 256
+AVATAR_MAX_BYTES = 8 * 1024 * 1024
+NICK_MAX = 32
+Image.MAX_IMAGE_PIXELS = 50_000_000
 FULL_SYNC_EVERY = timedelta(hours=6)
 GROUP_STALE_AFTER = timedelta(hours=2)
 MSK = timezone(timedelta(hours=3))  # Sevastopol keeps Moscow time, no DST
@@ -234,6 +242,13 @@ def current_tg_user(request: Request) -> dict:
             raise HTTPException(401, f"Telegram auth failed: {e}")
     host = (request.headers.get("host") or "").split(":")[0]
     if DEV_AUTH and host in ("localhost", "127.0.0.1"):
+        dev_id = request.headers.get("X-Dev-User", "")
+        if dev_id.isdigit() and int(dev_id) != DEV_USER["id"]:
+            with db.session() as conn:
+                u = conn.execute("SELECT * FROM users WHERE tg_id=?", (int(dev_id),)).fetchone()
+            if u:
+                return {"id": u["tg_id"], "first_name": u["tg_first"], "last_name": u["tg_last"],
+                        "username": u["username"], "photo_url": u["photo_url"]}
         return DEV_USER
     log.warning("auth rejected: request without initData (host %s)", host)
     raise HTTPException(401, "Open the app from Telegram")
@@ -253,6 +268,11 @@ def current_user(tg: dict = Depends(current_tg_user)):
 
 # ---------- api ----------
 
+def _photo(u) -> str:
+    """The photo everyone sees: an uploaded one if there is one, else the Telegram photo."""
+    return f"/avatars/{u['avatar']}.jpg" if u["avatar"] else u["photo_url"]
+
+
 def _profile(conn, user):
     group = None
     if user["group_id"]:
@@ -266,8 +286,10 @@ def _profile(conn, user):
         "first_name": user["tg_first"],
         "last_name": user["tg_last"],
         "username": user["username"],
-        "photo_url": user["photo_url"],
+        "photo_url": _photo(user),
+        "custom_avatar": bool(user["avatar"]),
         "real_name": user["real_name"],
+        "nickname": user["nickname"],
         "group": group,
         "onboarded": bool(user["real_name"] and group),
     }
@@ -317,6 +339,65 @@ def save_profile(body: ProfileIn, user=Depends(current_user)):
         return _profile(conn, user)
 
 
+class NicknameIn(BaseModel):
+    nickname: str = Field(max_length=200)
+
+
+@app.post("/api/profile/nickname")
+def save_nickname(body: NicknameIn, user=Depends(current_user)):
+    """The name friends see, changeable any time; empty brings back the real name.
+    The Telegram @tag is not stored as editable: it comes from Telegram on every request."""
+    nick = " ".join("".join(ch for ch in body.nickname if ch.isprintable()).split())
+    if nick and not 2 <= len(nick) <= NICK_MAX:
+        raise HTTPException(400, f"Ник: от 2 до {NICK_MAX} символов")
+    with db.session() as conn:
+        conn.execute("UPDATE users SET nickname=?, updated_at=datetime('now') WHERE tg_id=?",
+                     (nick or None, user["tg_id"]))
+        user = dict(conn.execute("SELECT * FROM users WHERE tg_id=?", (user["tg_id"],)).fetchone())
+        return _profile(conn, user)
+
+
+def _encode_avatar(raw: bytes) -> bytes:
+    """Whatever was sent becomes a square JPEG without metadata, or fails if it is not a picture."""
+    img = ImageOps.exif_transpose(Image.open(BytesIO(raw))).convert("RGB")
+    img = ImageOps.fit(img, (AVATAR_SIZE, AVATAR_SIZE), Image.LANCZOS)
+    out = BytesIO()
+    img.save(out, "JPEG", quality=86, optimize=True)
+    return out.getvalue()
+
+
+def _set_avatar(conn, user, token):
+    if user["avatar"]:
+        (AVATARS / f"{user['avatar']}.jpg").unlink(missing_ok=True)
+    conn.execute("UPDATE users SET avatar=?, updated_at=datetime('now') WHERE tg_id=?", (token, user["tg_id"]))
+    return _profile(conn, dict(conn.execute("SELECT * FROM users WHERE tg_id=?", (user["tg_id"],)).fetchone()))
+
+
+@app.post("/api/profile/avatar")
+async def upload_avatar(request: Request, user=Depends(current_user)):
+    """A photo of your own instead of the Telegram one; the body is the image itself."""
+    if int(request.headers.get("content-length") or 0) > AVATAR_MAX_BYTES:
+        raise HTTPException(413, "Фото слишком большое")
+    raw = await request.body()
+    if not raw or len(raw) > AVATAR_MAX_BYTES:
+        raise HTTPException(400, "Фото пустое или слишком большое")
+    try:
+        jpeg = await asyncio.to_thread(_encode_avatar, raw)
+    except Exception:
+        raise HTTPException(400, "Это не похоже на фото")
+    token = secrets.token_urlsafe(12)   # a fresh name on every change, so no cache shows the old photo
+    (AVATARS / f"{token}.jpg").write_bytes(jpeg)
+    with db.session() as conn:
+        return _set_avatar(conn, user, token)
+
+
+@app.delete("/api/profile/avatar")
+def remove_avatar(user=Depends(current_user)):
+    """Back to the Telegram photo."""
+    with db.session() as conn:
+        return _set_avatar(conn, user, None)
+
+
 async def _refresh_group(group_id: int):
     lock = _group_locks.setdefault(group_id, asyncio.Lock())
     if lock.locked():
@@ -332,9 +413,12 @@ async def _refresh_group(group_id: int):
 async def schedule(start: date, end: date, user=Depends(current_user)):
     if not user["group_id"]:
         raise HTTPException(409, "Профиль не заполнен")
+    return await _group_schedule(user["group_id"], start, end)
+
+
+async def _group_schedule(gid: int, start: date, end: date):
     if (end - start).days > 62:
         raise HTTPException(400, "Слишком длинный период")
-    gid = user["group_id"]
     with db.session() as conn:
         synced = conn.execute("SELECT synced_at FROM groups WHERE id=?", (gid,)).fetchone()["synced_at"]
     if not synced:
@@ -537,6 +621,173 @@ def calendar(token: str):
                     headers={"Content-Disposition": 'inline; filename="raspisanie.ics"', "Cache-Control": "no-cache"})
 
 
+# ---------- friends ----------
+# Found by exact Telegram @username only (no partial search, so nobody can list everyone);
+# a friend's schedule is visible only when the friendship is mutual.
+
+def _display_name(u) -> str:
+    return u["nickname"] or u["real_name"] or " ".join(x for x in (u["tg_first"], u["tg_last"]) if x) or "Студент"
+
+
+def _now_status(conn, group_id, now: datetime):
+    """What the student has right now: a running pair, the next one today, or nothing."""
+    if not group_id:
+        return {"state": "unknown"}
+    local = now.astimezone(MSK)
+    hhmm = local.strftime("%H:%M")
+    slots = conn.execute(
+        "SELECT start, end, MIN(subject) AS subject, room FROM lessons WHERE group_id=? AND date=? "
+        "GROUP BY start ORDER BY start", (group_id, local.date().isoformat())).fetchall()
+    if not slots:
+        return {"state": "free"}
+    for sl in slots:
+        if sl["start"] <= hhmm < sl["end"]:
+            return {"state": "now", **dict(sl)}
+        if hhmm < sl["start"]:
+            return {"state": "next", **dict(sl)}
+    return {"state": "done"}
+
+
+def _card(conn, tg_id: int, with_now: bool = False):
+    u = conn.execute(
+        "SELECT u.*, g.name AS group_name, g.course AS group_course, f.name AS faculty, f.is_master "
+        "FROM users u LEFT JOIN groups g ON g.id = u.group_id LEFT JOIN faculties f ON f.id = g.faculty_id "
+        "WHERE u.tg_id=?", (tg_id,)).fetchone()
+    if not u:
+        return None
+    card = {"tg_id": u["tg_id"], "name": _display_name(u), "photo_url": _photo(u),
+            "group": u["group_name"], "course": u["group_course"],
+            "faculty": u["faculty"], "is_master": bool(u["is_master"])}
+    if with_now:
+        card["now"] = _now_status(conn, u["group_id"], datetime.now(timezone.utc))
+    return card
+
+
+def _flame(conn, me: int, other: int, today: date | None = None):
+    """The streak between two friends: a day counts when both pressed the flame on it.
+    Today still being open, a streak that reached yesterday is alive until midnight."""
+    today = today or datetime.now(MSK).date()
+    mine = {r["day"] for r in conn.execute("SELECT day FROM flame_taps WHERE tapper=? AND friend=?", (me, other))}
+    theirs = {r["day"] for r in conn.execute("SELECT day FROM flame_taps WHERE tapper=? AND friend=?", (other, me))}
+    both = mine & theirs
+    t = today.isoformat()
+    day = today if t in both else today - timedelta(days=1)
+    streak = 0
+    while day.isoformat() in both:
+        streak += 1
+        day -= timedelta(days=1)
+    return {"streak": streak, "me_today": t in mine, "friend_today": t in theirs}
+
+
+def _relation(conn, me: int, other: int) -> str:
+    if me == other:
+        return "self"
+    out = conn.execute("SELECT status FROM friendships WHERE requester=? AND addressee=?", (me, other)).fetchone()
+    inc = conn.execute("SELECT status FROM friendships WHERE requester=? AND addressee=?", (other, me)).fetchone()
+    if (out and out["status"] == "accepted") or (inc and inc["status"] == "accepted"):
+        return "friend"
+    if out:
+        return "outgoing"
+    if inc:
+        return "incoming"
+    return "none"
+
+
+@app.get("/api/friends")
+def friends(user=Depends(current_user)):
+    me = user["tg_id"]
+    with db.session() as conn:
+        mutual = [r["other"] for r in conn.execute(
+            "SELECT CASE WHEN requester=? THEN addressee ELSE requester END AS other FROM friendships "
+            "WHERE (requester=? OR addressee=?) AND status='accepted' ORDER BY created_at", (me, me, me))]
+        incoming = [r["requester"] for r in conn.execute(
+            "SELECT requester FROM friendships WHERE addressee=? AND status='pending' ORDER BY created_at", (me,))]
+        outgoing = [r["addressee"] for r in conn.execute(
+            "SELECT addressee FROM friendships WHERE requester=? AND status='pending' ORDER BY created_at", (me,))]
+        cards = lambda ids, now=False: [c for c in (_card(conn, i, now) for i in ids) if c]  # noqa: E731
+        friend_cards = cards(mutual, True)
+        for c in friend_cards:
+            c["flame"] = _flame(conn, me, c["tg_id"])
+        return {"friends": friend_cards, "incoming": cards(incoming), "outgoing": cards(outgoing)}
+
+
+@app.get("/api/users/find")
+def find_user(username: str, user=Depends(current_user)):
+    name = username.strip().lstrip("@").lower()
+    if not 3 <= len(name) <= 32 or not all(ch.isalnum() or ch == "_" for ch in name):
+        raise HTTPException(400, "Введите тег Telegram, например @ivan_petrov")
+    with db.session() as conn:
+        found = conn.execute(
+            "SELECT tg_id FROM users WHERE lower(username)=? AND real_name IS NOT NULL AND group_id IS NOT NULL "
+            "ORDER BY updated_at DESC LIMIT 1", (name,)).fetchone()
+        if not found:
+            return {"user": None, "relation": None}
+        return {"user": _card(conn, found["tg_id"]), "relation": _relation(conn, user["tg_id"], found["tg_id"])}
+
+
+@app.post("/api/friends/{other}")
+def add_friend(other: int, user=Depends(current_user)):
+    """Send a request; if they already asked you, this accepts it."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        if not conn.execute("SELECT 1 FROM users WHERE tg_id=? AND real_name IS NOT NULL", (other,)).fetchone():
+            raise HTTPException(404, "Такого студента нет в приложении")
+        rel = _relation(conn, me, other)
+        if rel == "self":
+            raise HTTPException(400, "Это вы")
+        if rel == "incoming":
+            conn.execute("UPDATE friendships SET status='accepted' WHERE requester=? AND addressee=?", (other, me))
+        elif rel == "none":
+            conn.execute("INSERT INTO friendships(requester, addressee) VALUES(?, ?)", (me, other))
+        return {"relation": _relation(conn, me, other)}
+
+
+@app.post("/api/friends/{other}/accept")
+def accept_friend(other: int, user=Depends(current_user)):
+    me = user["tg_id"]
+    with db.session() as conn:
+        n = conn.execute("UPDATE friendships SET status='accepted' WHERE requester=? AND addressee=? AND status='pending'",
+                         (other, me)).rowcount
+        if not n:
+            raise HTTPException(404, "Заявки уже нет")
+        return {"relation": "friend"}
+
+
+@app.delete("/api/friends/{other}")
+def remove_friend(other: int, user=Depends(current_user)):
+    """Decline a request, cancel your own, or remove a friend: the link goes in both directions."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        conn.execute("DELETE FROM friendships WHERE (requester=? AND addressee=?) OR (requester=? AND addressee=?)",
+                     (me, other, other, me))
+        conn.execute("DELETE FROM flame_taps WHERE (tapper=? AND friend=?) OR (tapper=? AND friend=?)",
+                     (me, other, other, me))
+    return {"relation": "none"}
+
+
+@app.post("/api/friends/{other}/flame")
+def press_flame(other: int, user=Depends(current_user)):
+    """Press today's flame with a friend; pressing again the same day changes nothing."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        if _relation(conn, me, other) != "friend":
+            raise HTTPException(403, "Огонёк есть только у друзей")
+        conn.execute("INSERT OR IGNORE INTO flame_taps(tapper, friend, day) VALUES(?, ?, ?)",
+                     (me, other, datetime.now(MSK).date().isoformat()))
+        return _flame(conn, me, other)
+
+
+@app.get("/api/friends/{other}/schedule")
+async def friend_schedule(other: int, start: date, end: date, user=Depends(current_user)):
+    with db.session() as conn:
+        if _relation(conn, user["tg_id"], other) != "friend":
+            raise HTTPException(403, "Расписание видно только друзьям")
+        friend = conn.execute("SELECT group_id FROM users WHERE tg_id=?", (other,)).fetchone()
+    if not friend or not friend["group_id"]:
+        raise HTTPException(404, "У друга не выбрана группа")
+    return await _group_schedule(friend["group_id"], start, end)
+
+
 @app.get("/api/avatar")
 async def avatar(user=Depends(current_user)):
     """Profile photo through the bot, for clients whose initData has no photo_url."""
@@ -556,4 +807,5 @@ async def avatar(user=Depends(current_user)):
         raise HTTPException(404)
 
 
+app.mount("/avatars", StaticFiles(directory=AVATARS), name="avatars")
 app.mount("/", StaticFiles(directory=ROOT / "webapp", html=True), name="webapp")
