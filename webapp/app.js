@@ -27,6 +27,12 @@ const state = {
   scheduleView: "day",  // "day", "week" or "stats" inside the schedule tab
   settings: null,       // the bot's settings for this student, loaded with the settings view
   friends: null,        // { friends, incoming, outgoing }
+  clubs: null,          // { my, invites, discover }
+  clubView: null,       // inside the clubs tab: { kind: "club", id, data } or { kind: "form", ... }
+  clubFilter: "all",    // the category chip picked above the list of clubs
+  clubsTab: "clubs",    // the clubs tab shows the list of clubs or the shared feed
+  sharedFeed: null,     // { posts, more }: open posts of every club you may open
+  unread: 0,            // notifications not yet seen, for the badge on the bell
   ob: null,             // onboarding draft
   reminders: new Map(), // "date|start|subject" -> reminder
   liveSig: "",          // which pair the lead card shows, to know when to redraw
@@ -98,6 +104,14 @@ const icon = {
   check: svg('<path d="M5 12.5 10 17.5 19 7"/>'),
   camera: svg('<path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2L9 5h6l1.5 2h2A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5Z"/><circle cx="12" cy="12.6" r="3.2"/>'),
   lock: svg('<rect x="5.5" y="10.5" width="13" height="9.5" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>'),
+  smile: svg('<circle cx="12" cy="12" r="8.5"/><path d="M8.6 14.2c.9 1.2 2 1.8 3.4 1.8s2.5-.6 3.4-1.8M9.3 9.8h.01M14.7 9.8h.01"/>'),
+  comment: svg('<path d="M20 11.6a7.6 7.6 0 0 1-11.2 6.7L4.5 19.5l1.3-4A7.6 7.6 0 1 1 20 11.6Z"/>'),
+  send: svg('<path d="M12 19V5.5M6.5 11 12 5.5l5.5 5.5"/>'),
+  pen: svg('<path d="M4.5 19.5h4l10.3-10.3a2 2 0 0 0 0-2.8l-1.2-1.2a2 2 0 0 0-2.8 0L4.5 15.5Z"/><path d="m13.5 6.5 4 4"/>'),
+  trash: svg('<path d="M4.5 7h15M10 4h4M6.5 7l.8 12.1a1.5 1.5 0 0 0 1.5 1.4h6.4a1.5 1.5 0 0 0 1.5-1.4L17.5 7"/><path d="M10 11v5.5M14 11v5.5"/>'),
+  bell: svg('<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.6 2.2H4.4Z"/><path d="M10 20.6a2.1 2.1 0 0 0 4 0"/>'),
+  globe: svg('<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.3 2.4 3.4 5.2 3.4 8.5s-1.1 6.1-3.4 8.5c-2.3-2.4-3.4-5.2-3.4-8.5s1.1-6.1 3.4-8.5Z"/>'),
+  plane: svg('<path d="M20.5 4.5 3.5 11.3l5.7 2.1 2.1 6.1 3.3-3.8 4.3 3.1Z"/><path d="m9.2 13.4 11.3-8.9"/>'),
 };
 
 /* ---------- subjects: one colour and one drawn mark per discipline ----------
@@ -306,6 +320,12 @@ class SlideTabs {
     this.selected = Math.max(0, this.tabs.findIndex((t) => t.getAttribute("aria-selected") === "true"));
     this.tabs.forEach((tab, i) => tab.addEventListener("click", () => this.select(i, { fromUser: true })));
     this.place();
+    // the row can change width without a window resize: a scrollbar appearing under it, the font arriving,
+    // the text zoom of the phone; the pill follows its tab whatever moved it
+    if ("ResizeObserver" in window) {
+      const watch = new ResizeObserver(() => this.place());
+      [root, ...this.tabs].forEach((el) => watch.observe(el));
+    }
   }
   /** where the pill goes for tab i: [x, width] in the row's coordinates */
   target(i) {
@@ -341,6 +361,8 @@ const tabbarTabs = new SlideTabs(tabbar, (tab) => {
   haptic();
   state.tab = tab.dataset.tab;
   if (state.tab === "schedule") { state.selected = now().iso; state.weekStart = mondayOf(state.selected); }
+  if (state.tab === "clubs" && state.clubView?.kind === "club") { state.clubView.data = null; state.clubView.feed = null; }
+  if (state.tab === "clubs") state.sharedFeed = null;
   render();
   window.scrollTo(0, 0);
 }, { fit: true });
@@ -365,6 +387,8 @@ function placeTabs() {
   tabbarTabs.place();
   if (profileTabs?.root.isConnected) profileTabs.place();
   if (schedTabs?.root.isConnected) schedTabs.place();
+  if (clubTabs?.root.isConnected) clubTabs.place();
+  if (clubsTabs?.root.isConnected) clubsTabs.place();
 }
 addEventListener("resize", placeTabs);
 document.fonts?.ready.then(placeTabs); // label widths change once Inter arrives
@@ -842,11 +866,16 @@ function scheduleHost() {
   let host = document.getElementById("sched-body");
   if (!host) {
     app.innerHTML = `
-      <div class="slide-tabs segmented sched-switch" role="tablist" aria-label="Вид расписания">
-        <span class="slide-cursor" aria-hidden="true"></span>
-        ${SCHEDULE_VIEWS.map(([id, label]) => `<button role="tab" data-sview="${id}" aria-selected="${state.scheduleView === id}">${label}</button>`).join("")}
+      <div class="sched-top">
+        <div class="slide-tabs segmented sched-switch" role="tablist" aria-label="Вид расписания">
+          <span class="slide-cursor" aria-hidden="true"></span>
+          ${SCHEDULE_VIEWS.map(([id, label]) => `<button role="tab" data-sview="${id}" aria-selected="${state.scheduleView === id}">${label}</button>`).join("")}
+        </div>
+        ${bellButton()}
       </div>
       <div id="sched-body"></div>`;
+    document.getElementById("bell").addEventListener("click", openNotifications);
+    updateBell();
     schedTabs = new SlideTabs(app.querySelector(".sched-switch"), (tab) => {
       haptic();
       const order = SCHEDULE_VIEWS.map(([id]) => id);
@@ -1202,18 +1231,21 @@ function bindStats() {
 /* ---------- bottom sheet ---------- */
 
 const sheet = document.getElementById("sheet");
+let backBeforeSheet = null; // what Telegram's back button did before the sheet took it over
 function openSheet(html, bind) {
   const panel = sheet.querySelector(".sheet-panel");
   panel.innerHTML = `<div class="grabber" aria-hidden="true"></div>${html}`;
   sheet.classList.remove("closing");
   sheet.hidden = false;
+  if (backHandler !== closeSheet) backBeforeSheet = backHandler;
   setBack(closeSheet);
   bind?.(panel);
 }
 function closeSheet() {
   if (sheet.hidden || sheet.classList.contains("closing")) return;
   sheet.classList.add("closing");
-  setBack(null);
+  setBack(backBeforeSheet);
+  backBeforeSheet = null;
   setTimeout(() => { sheet.hidden = true; sheet.classList.remove("closing"); }, reduceMotion.matches ? 0 : 200);
 }
 sheet.addEventListener("click", (e) => { if (e.target.hasAttribute("data-close")) closeSheet(); });
@@ -1313,17 +1345,1217 @@ const emptyState = (art, title, text) => `
     <strong>${title}</strong><p>${text}</p>
   </div>`;
 
-/* ---------- screen: clubs ---------- */
+/* ---------- notifications: the bell on the main screen and what it lists ---------- */
 
+async function loadUnread() {
+  try { state.unread = (await api("/api/notifications/unread")).unread; } catch (_) { return; }
+  updateBell();
+}
+const bellButton = () => `
+  <button class="bell" id="bell" aria-label="Уведомления">${icon.bell}<span class="bell-badge num" hidden></span></button>`;
+function updateBell() {
+  const bell = document.getElementById("bell");
+  if (!bell) return;
+  const badge = bell.querySelector(".bell-badge");
+  badge.hidden = !state.unread;
+  badge.textContent = state.unread > 99 ? "99+" : String(state.unread);
+  bell.setAttribute("aria-label", state.unread ? `Уведомления, новых: ${state.unread}` : "Уведомления");
+}
+
+/** what happened, in one sentence; the bold name is whoever did it */
+function notificationText(n) {
+  const who = `<b>${esc(n.actor?.name || "Кто-то")}</b>`;
+  const club = n.club ? `«${esc(n.club.name)}»` : "клуб";
+  const quote = n.text ? `: ${esc(n.text)}` : "";
+  return {
+    friend_request: `${who} хочет добавить вас в друзья`,
+    friend_accept: `Вы теперь друзья с ${who}`,
+    flame: `Огонёк от ${who}: зажгите свой, чтобы серия продолжилась`,
+    club_invite: `${who} приглашает вас в клуб ${club}`,
+    club_request: `${who} хочет вступить в ${club}`,
+    request_accept: `Вашу заявку в ${club} приняли`,
+    club_post: `Новая запись в ${club}${quote}`,
+    comment: `Комментарий от ${who} к вашей записи в ${club}${quote}`,
+    club_admin: `Вас сделали админом клуба ${club}`,
+    club_owner: `Вам передали клуб ${club}, теперь вы владелец`,
+    club_kicked: `Вас исключили из клуба ${club}`,
+  }[n.kind] || "Новое уведомление";
+}
+const BY_CLUB = new Set(["club_post", "request_accept", "club_admin", "club_owner", "club_kicked"]);
+const ntfAvatar = (n) => (BY_CLUB.has(n.kind) || !n.actor) && n.club ? clubAvatar(n.club, "ntf-avatar")
+  : personAvatar(n.actor || { name: "?" }, "ntf-avatar");
+const ntfHtml = (n) => `
+  <li><button class="ntf ${n.read ? "" : "unread"}" data-ntf="${n.id}">
+    ${ntfAvatar(n)}
+    <span class="ntf-main"><span class="ntf-text">${notificationText(n)}</span><time>${postTime(n.created_at)}</time></span>
+    ${n.read ? "" : `<i class="ntf-dot" aria-label="Новое"></i>`}
+  </button></li>`;
+
+async function openNotifications() {
+  haptic();
+  openSheet(`<div class="sheet-head"><div><h2 id="sheet-title">Уведомления</h2></div></div><p class="options-note" id="ntf-loading">Загружаем…</p>`);
+  let data;
+  try {
+    data = await api("/api/notifications");
+  } catch (_) {
+    const wait = document.getElementById("ntf-loading");
+    if (wait) wait.textContent = "Не получилось загрузить уведомления. Проверьте интернет.";
+    return;
+  }
+  if (!document.getElementById("ntf-loading")) return;   // closed while loading
+  openSheet(`
+    <div class="sheet-head"><div><h2 id="sheet-title">Уведомления</h2><p>${data.unread ? `Новых: ${data.unread}` : "Всё прочитано"}</p></div></div>
+    ${data.items.length ? `<ul class="ntf-list">${data.items.map(ntfHtml).join("")}</ul>`
+      : `<p class="search-hint">Пока ничего нет. Здесь появятся заявки в друзья, приглашения, новые записи в ваших клубах и комментарии к вашим записям.</p>`}`, (panel) => {
+    panel.querySelectorAll("[data-ntf]").forEach((b) => b.addEventListener("click", () =>
+      openNotification(data.items.find((n) => n.id === Number(b.dataset.ntf)))));
+  });
+  if (data.unread) {
+    state.unread = 0;
+    updateBell();
+    api("/api/notifications/read", { method: "POST" }).catch(() => {});
+  }
+}
+
+/** a tap on a notification goes where it happened */
+function openNotification(n) {
+  if (!n) return;
+  haptic();
+  closeSheet();
+  if (["friend_request", "friend_accept", "flame"].includes(n.kind)) {
+    state.tab = "profile";
+    state.profileView = "friends";
+  } else {
+    state.tab = "clubs";
+    state.clubsTab = "clubs";
+    state.clubView = n.club && n.kind !== "club_kicked"
+      ? { kind: "club", id: n.club.id, data: null, section: n.kind === "club_request" ? "members" : "feed" }
+      : null;
+  }
+  window.scrollTo(0, 0);
+  render();
+}
+
+/* ---------- screen: clubs ----------
+   A student may be in any number of clubs and own up to three. The list shows your clubs, the invitations
+   and the clubs you may join; a club opens as its own page with its feed and members;
+   founding a club and its settings share one form. */
+
+const CLUB_CATS = {
+  science: ["Наука", "blue"], it: ["IT", "cyan"], sport: ["Спорт", "green"], art: ["Творчество", "pink"],
+  music: ["Музыка", "orange"], games: ["Игры", "red"], language: ["Языки", "teal"],
+  volunteer: ["Волонтёрство", "lime"], other: ["Другое", "yellow"],
+};
+const CLUB_VIS = {
+  public: ["Открытый", "Любой студент найдёт клуб в списке и вступит"],
+  friends: ["Для друзей", "Клуб видят и вступают только друзья владельца"],
+  closed: ["По заявкам", "Клуб виден всем, а вступают по заявке, которую одобряете вы или админы"],
+  invite: ["По приглашениям", "Клуба нет в списке, вступить можно только по приглашению"],
+};
+const ROLE_NAME = { owner: "Владелец", admin: "Админ" };
+const memberCount = (n) => `${n} ${plural(n, "участник", "участника", "участников")}`;
+const clubMeta = (c) => [CLUB_CATS[c.category]?.[0], CLUB_VIS[c.visibility]?.[0], memberCount(c.members)].join(" · ");
+const errText = (e, fallback = "Не получилось. Проверьте интернет и попробуйте ещё раз.") =>
+  e instanceof HttpError && e.status >= 400 && e.status < 500 && e.message ? e.message : fallback;
+function say(msg) {
+  if (inTelegram && tg.showAlert) tg.showAlert(msg); else alert(msg);
+}
+function openOut(url) {
+  if (inTelegram && url.startsWith("https://t.me/")) tg.openTelegramLink(url);
+  else if (inTelegram) tg.openLink(url);
+  else window.open(url, "_blank", "noopener");
+}
+
+function clubAvatar(c, cls = "") {
+  const hue = (CLUB_CATS[c.category] || CLUB_CATS.other)[1];
+  const ini = esc(initials(c.name));
+  const img = c.photo_url ? `<img src="${esc(c.photo_url)}" alt="" onerror="this.parentNode.textContent=this.parentNode.dataset.i">` : "";
+  return `<span class="avatar club-avatar ${cls}" style="--c: var(--hue-${hue})" data-i="${ini}" aria-hidden="true">${img || ini}</span>`;
+}
+const clubPill = (club) =>
+  `<small class="club-pill" style="--c: var(--hue-${(CLUB_CATS[club.category] || CLUB_CATS.other)[1]})" title="Клуб">${esc(club.name)}</small>`;
+function clubRow(c, trailing = "", sub = esc(clubMeta(c)), cls = "") {
+  return `
+    <li class="person ${cls}" role="button" tabindex="0" data-club="${c.id}">
+      ${clubAvatar(c)}
+      <div class="person-text"><b>${esc(c.name)}</b><span>${sub}</span></div>
+      ${trailing}
+    </li>`;
+}
+
+let clubsSig = "";
+async function loadClubs() {
+  let data;
+  try { data = await api("/api/clubs"); } catch (_) { return; }
+  state.clubs = data;
+  showClubNotice();
+  const sig = JSON.stringify(data);
+  if (sig === clubsSig) return;
+  clubsSig = sig;
+  if (state.tab === "clubs" && !state.clubView && state.clubsTab === "clubs" && !state.ob
+      && !document.activeElement?.matches?.("input, textarea")) renderClubs();
+}
+
+const CLUBS_TABS = [["clubs", "Клубы"], ["feed", "Общая лента"]];
+let clubsTabs = null;
+
+/** the clubs tab: its switch stays mounted, so the pill can travel; the list or the shared feed renders below */
 function renderClubs() {
+  const v = state.clubView;
+  if (v?.kind === "club") return renderClubPage();
+  if (v?.kind === "form") return renderClubForm();
+  setBack(null);
+  const c = state.clubs;
   app.innerHTML = `
-    <header class="clubs-head"><h1>Студклубы</h1></header>
-    <p class="clubs-sub">Клубы по интересам студентов филиала: найдите своих или соберите новый.</p>
-    ${emptyState("clubs", "Клубов пока нет", "Скоро здесь можно будет создать свой клуб, вступить в чужие и следить за встречами.")}
-    <div style="margin-top:20px">
-      <button class="btn" disabled aria-describedby="club-soon">Создать клуб</button>
-      <p class="btn-note" id="club-soon">Появится в следующем обновлении</p>
+    <header class="clubs-head"><h1>Студклубы</h1>${c && c.owned < c.own_max ? `<button class="btn-sm primary" id="club-new">Создать</button>` : ""}</header>
+    <div class="slide-tabs segmented clubs-switch" role="tablist" aria-label="Раздел клубов">
+      <span class="slide-cursor" aria-hidden="true"></span>
+      ${CLUBS_TABS.map(([id, label]) => `<button role="tab" data-ctab="${id}" aria-selected="${state.clubsTab === id}">${label}</button>`).join("")}
+    </div>
+    <div id="clubs-body"></div>`;
+  app.querySelector("#club-new")?.addEventListener("click", () => openClubForm(null));
+  clubsTabs = new SlideTabs(app.querySelector(".clubs-switch"), (tab) => {
+    haptic();
+    state.clubsTab = tab.dataset.ctab;
+    if (state.clubsTab === "feed") state.sharedFeed = null;   // fresh every time it is opened
+    renderClubsBody();
+  });
+  renderClubsBody();
+}
+
+function renderClubsBody() {
+  const host = document.getElementById("clubs-body");
+  if (!host) return;
+  if (state.clubsTab === "feed") renderSharedFeed(host);
+  else renderClubList(host);
+}
+
+function renderClubList(host) {
+  const c = state.clubs;
+  const sub = `<p class="clubs-sub">Клубы по интересам студентов филиала: найдите своих или соберите новый.</p>`;
+  if (!c) {
+    host.innerHTML = `${sub}<p class="options-note">Загружаем клубы…</p>`;
+    loadClubs();
+    return;
+  }
+  const seen = seenPosts();
+  const my = c.my.length ? `
+    <h2 class="group-label">Мои клубы · ${c.my.length}</h2>
+    <ul class="people">${c.my.map((x) => clubRow(x,
+      ROLE_NAME[x.role] ? `<span class="role-tag ${x.role}">${ROLE_NAME[x.role]}</span>` : `<span class="row-go">${icon.right}</span>`,
+      `${esc(clubMeta(x))}${x.requests ? `<em class="person-now fresh">Заявки на вступление: ${x.requests}</em>` : ""}${
+        x.last_post > (seen[x.id] || 0) ? `<em class="person-now fresh">Новые записи в ленте</em>` : ""}`)).join("")}</ul>
+    ${c.owned >= c.own_max ? `<p class="search-hint">Своих клубов может быть не больше ${c.own_max}. Чтобы создать новый, передайте один из своих другому участнику.</p>` : ""}` : "";
+  const invites = c.invites.length ? `
+    <h2 class="group-label">Вас приглашают</h2>
+    <ul class="people">${c.invites.map((x) => clubRow(x, `<div class="person-actions">
+        <button class="btn-sm primary" data-invite-act="accept" data-id="${x.id}">Принять</button>
+        <button class="btn-sm" data-invite-act="decline" data-id="${x.id}">Отклонить</button></div>`,
+      `${esc(clubMeta(x))}<em class="person-now">Приглашение от ${esc(x.inviter)}</em>`, "with-actions")).join("")}</ul>` : "";
+  const cats = [...new Set(c.discover.map((x) => x.category))];
+  const filter = cats.includes(state.clubFilter) ? state.clubFilter : "all";
+  const shown = c.discover.filter((x) => filter === "all" || x.category === filter);
+  const chips = cats.length > 1 ? `
+    <div class="club-filter" role="group" aria-label="Направленность">
+      ${["all", ...cats].map((k) => `<button data-filter="${k}" aria-pressed="${filter === k}">${k === "all" ? "Все" : CLUB_CATS[k][0]}</button>`).join("")}
+    </div>` : "";
+  const list = c.discover.length ? `
+    <h2 class="group-label">${c.my.length ? "Другие клубы" : "Можно вступить"} · ${c.discover.length}</h2>
+    ${chips}
+    <ul class="people">${shown.map((x) => clubRow(x, `<span class="row-go">${icon.right}</span>`)).join("")}</ul>` : "";
+  const empty = !c.my.length && !c.invites.length && !c.discover.length ? `
+    ${emptyState("clubs", "Клубов пока нет", "Создайте первый: придумайте название и решите, кто может вступить.")}
+    <button class="btn" id="club-new-2">Создать клуб</button>` : "";
+  host.innerHTML = sub + my + invites + list + empty;
+
+  host.querySelector("#club-new-2")?.addEventListener("click", () => openClubForm(null));
+  host.querySelectorAll("[data-filter]").forEach((b) => b.addEventListener("click", () => {
+    haptic();
+    state.clubFilter = b.dataset.filter;
+    renderClubList(host);
+  }));
+  host.querySelectorAll("[data-club]").forEach((el) => {
+    const open = () => openClub(Number(el.dataset.club));
+    el.addEventListener("click", open);
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target === el) open(); });
+  });
+  host.querySelectorAll("[data-invite-act]").forEach((b) => b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    b.disabled = true;
+    answerClubInvite(b.dataset.inviteAct === "accept", Number(b.dataset.id));
+  }));
+}
+
+/* the shared feed: open posts of all the clubs you may open, each under its club's name */
+async function renderSharedFeed(host) {
+  if (!state.sharedFeed) {
+    host.innerHTML = `<p class="options-note">Загружаем общую ленту…</p>`;
+    try {
+      state.sharedFeed = await api("/api/feed");
+    } catch (_) {
+      if (!host.isConnected) return;
+      host.innerHTML = `<p class="note feed-empty"><strong>Лента не загрузилась</strong>Проверьте интернет и откройте её ещё раз.</p>`;
+      return;
+    }
+    if (!host.isConnected || state.clubsTab !== "feed" || state.clubView) return;
+  }
+  const f = state.sharedFeed;
+  host.innerHTML = `
+    <p class="clubs-sub">Открытые записи всех клубов, которые вам доступны. Нажмите на название клуба, чтобы открыть его.</p>
+    ${f.posts.length ? `<div class="feed">${f.posts.map(postHtml).join("")}</div>` : `
+      <p class="note feed-empty"><strong>Открытых записей пока нет</strong>Когда клубы опубликуют что-нибудь для всех, записи появятся здесь.</p>`}
+    ${f.more ? `<button class="btn-text" id="shared-more">Показать ещё</button>` : ""}`;
+  f.posts.forEach((p) => bindPost(host.querySelector(`.post[data-post="${p.id}"]`), p));
+  host.querySelector("#shared-more")?.addEventListener("click", async (e) => {
+    const b = e.currentTarget;
+    b.disabled = true;
+    b.textContent = "Загружаем…";
+    try {
+      const older = await api(`/api/feed?before=${f.posts[f.posts.length - 1].id}`);
+      state.sharedFeed = { posts: [...f.posts, ...older.posts], more: older.more };
+      renderSharedFeed(host);
+    } catch (_) {
+      b.disabled = false;
+      b.textContent = "Показать ещё";
+      say("Не получилось загрузить записи. Проверьте интернет.");
+    }
+  });
+}
+
+async function answerClubInvite(accept, id) {
+  haptic();
+  let data = null;
+  try {
+    if (accept) data = await api(`/api/clubs/${id}/join`, { method: "POST" });
+    else await api(`/api/clubs/${id}/invites/${state.me.tg_id}`, { method: "DELETE" });
+    haptic("success");
+  } catch (e) {
+    haptic("error");
+    say(errText(e));
+  }
+  await loadClubs();
+  if (data && state.tab === "clubs") {
+    state.clubView = { kind: "club", id, data };
+    window.scrollTo(0, 0);
+  }
+  if (state.tab === "clubs") renderClubs();
+}
+
+/* the pop-up when someone invites you to a club */
+const clubNoticeShown = new Set();
+function showClubNotice() {
+  if (state.ob || !state.clubs || document.querySelector(".notice")) return;
+  const c = state.clubs.invites.find((x) => !clubNoticeShown.has(x.id));
+  if (!c) return;
+  clubNoticeShown.add(c.id);
+  haptic("success");
+  const el = document.createElement("div");
+  el.id = "club-notice";
+  el.className = "notice";
+  el.setAttribute("role", "alertdialog");
+  el.setAttribute("aria-label", "Приглашение в клуб");
+  el.innerHTML = `
+    <div class="notice-body">
+      ${clubAvatar(c, "notice-avatar")}
+      <div class="notice-text"><span>Вас пригласили в клуб</span><b>${esc(c.name)}</b><small>Приглашение от ${esc(c.inviter)}</small></div>
+      <button class="notice-close" aria-label="Решить позже">${svg('<path d="M6 6l12 12M18 6 6 18"/>')}</button>
+    </div>
+    <div class="notice-actions">
+      <button class="btn-sm primary" data-n="accept">Принять</button>
+      <button class="btn-sm" data-n="decline">Отклонить</button>
     </div>`;
+  document.body.append(el);
+  const close = () => {
+    el.classList.add("out");
+    setTimeout(() => { el.remove(); showFriendNotice(); showClubNotice(); }, 260);
+  };
+  el.querySelector(".notice-close").addEventListener("click", close);
+  el.querySelectorAll("[data-n]").forEach((b) => b.addEventListener("click", async () => {
+    el.querySelectorAll("button").forEach((x) => (x.disabled = true));
+    close();
+    await answerClubInvite(b.dataset.n === "accept", c.id);
+  }));
+}
+
+/* ---------- a club's page ---------- */
+
+function openClub(id) {
+  haptic();
+  state.clubView = { kind: "club", id, data: null };
+  window.scrollTo(0, 0);
+  renderClubs();
+}
+function closeClubView() {
+  const v = state.clubView;
+  state.clubView = v?.kind === "form" && v.back ? v.back : null;
+  window.scrollTo(0, 0);
+  renderClubs();
+}
+function clubUpdated(data) {
+  const v = state.clubView;
+  if (v?.kind === "club") {
+    if (v.data?.role !== data.role) v.feed = null;
+    v.data = data;
+  }
+  loadClubs();
+  renderClubs();
+}
+const backLink = (label) => inTelegram ? "" : `<div class="ob-top"><button class="ob-back" id="club-back">${icon.left}${label}</button></div>`;
+
+const CLUB_SECTIONS = [["feed", "Лента"], ["members", "Участники"]];
+let clubTabs = null;
+
+function confirmTap(b, text) {
+  if (b.dataset.sure) return true;
+  b.dataset.sure = "1";
+  b.textContent = text;
+  haptic();
+  return false;
+}
+async function clubAct(b, request, after) {
+  b.disabled = true;
+  try {
+    const data = await request();
+    haptic("success");
+    after(data);
+  } catch (e) {
+    haptic("error");
+    b.disabled = false;
+    say(errText(e));
+  }
+}
+function clubToList() {
+  state.clubView = null;
+  window.scrollTo(0, 0);
+  loadClubs();
+  renderClubs();
+}
+
+async function renderClubPage() {
+  const v = state.clubView;
+  setBack(closeClubView);
+  const bindBack = () => document.getElementById("club-back")?.addEventListener("click", closeClubView);
+  if (!v.data) {
+    app.innerHTML = `${backLink("Клубы")}<p class="options-note">Загружаем клуб…</p>`;
+    bindBack();
+    try {
+      v.data = await api(`/api/clubs/${v.id}`);
+    } catch (e) {
+      if (state.clubView !== v) return;
+      app.innerHTML = `${backLink("Клубы")}<p class="note"><strong>Клуб не открылся</strong>${
+        e instanceof HttpError && e.status === 404 ? "Его удалили, или он вам больше недоступен." : "Проверьте интернет и попробуйте ещё раз."}</p>`;
+      bindBack();
+      return;
+    }
+    if (state.clubView !== v || state.tab !== "clubs") return;
+  }
+  const c = v.data;
+  const manage = c.role === "owner" || c.role === "admin";
+  const hero = `
+    <div class="club-hero">
+      ${clubAvatar(c, "big")}
+      <h1>${esc(c.name)}</h1>
+      <p>${esc(clubMeta(c))}</p>
+    </div>
+    ${c.about ? `<p class="club-about">${esc(c.about)}</p>` : ""}`;
+  const base = `/api/clubs/${c.id}`;
+
+  v.section ||= "feed";
+  const top = !c.role ? `
+    ${c.can_join ? `<button class="btn club-action" id="club-join">${c.invited ? "Принять приглашение" : "Вступить в клуб"}</button>` : ""}
+    ${c.invited ? `<button class="btn-text" id="club-decline">Отклонить приглашение</button>` : ""}
+    ${c.can_request && !c.requested ? `<button class="btn club-action" id="club-request">Подать заявку</button>
+      <p class="search-hint club-request-hint">В этот клуб вступают по заявке: её рассмотрят владелец или админы.</p>` : ""}
+    ${c.can_request && c.requested ? `<p class="note club-action"><strong>Заявка отправлена</strong>Владелец или админы клуба рассмотрят её, и вам придёт уведомление.</p>
+      <button class="btn-text" id="club-unrequest">Отменить заявку</button>` : ""}
+    <p class="club-owner">Владелец: ${esc(c.owner)}</p>`
+    : c.chat_url
+    ? `<button class="btn chat-btn club-action" id="club-chat">${icon.plane}Открыть чат клуба</button>`
+    : manage ? `<p class="search-hint club-action">Добавьте ссылку на чат в Telegram в настройках клуба, и у участников появится кнопка чата.</p>` : "";
+  const tools = manage ? `
+    <div class="club-tools">
+      <button class="btn secondary" id="club-invite">Пригласить</button>
+      <button class="btn secondary" id="club-edit">Настройки</button>
+    </div>` : "";
+  app.innerHTML = `${backLink("Клубы")}${hero}${top}${tools}
+    <div class="slide-tabs segmented club-switch" role="tablist" aria-label="Раздел клуба">
+      <span class="slide-cursor" aria-hidden="true"></span>
+      ${CLUB_SECTIONS.map(([id, label]) => `<button role="tab" data-csec="${id}" aria-selected="${v.section === id}">${
+        id === "members" ? `${label} · ${c.member_list.length}` : label}</button>`).join("")}
+    </div>
+    <div id="club-section"></div>`;
+  bindBack();
+  clubTabs = new SlideTabs(app.querySelector(".club-switch"), (tab) => {
+    haptic();
+    v.section = tab.dataset.csec;
+    renderClubSection();
+  });
+  document.getElementById("club-join")?.addEventListener("click", (e) =>
+    clubAct(e.currentTarget, () => api(`${base}/join`, { method: "POST" }), clubUpdated));
+  document.getElementById("club-decline")?.addEventListener("click", (e) =>
+    clubAct(e.currentTarget, () => api(`${base}/invites/${state.me.tg_id}`, { method: "DELETE" }), clubToList));
+  document.getElementById("club-request")?.addEventListener("click", (e) =>
+    clubAct(e.currentTarget, () => api(`${base}/request`, { method: "POST" }), clubUpdated));
+  document.getElementById("club-unrequest")?.addEventListener("click", (e) =>
+    clubAct(e.currentTarget, () => api(`${base}/request`, { method: "DELETE" }), clubUpdated));
+  document.getElementById("club-chat")?.addEventListener("click", () => { haptic(); openOut(c.chat_url); });
+  document.getElementById("club-invite")?.addEventListener("click", openInviteSheet);
+  document.getElementById("club-edit")?.addEventListener("click", () => openClubForm(c));
+  renderClubSection();
+}
+
+function renderClubSection() {
+  const v = state.clubView;
+  const host = document.getElementById("club-section");
+  if (!host || !v?.data) return;
+  if (v.section === "members") renderMembers(host, v.data);
+  else renderFeed(host);
+}
+
+function renderMembers(host, c) {
+  const role = c.role;
+  const manage = role === "owner" || role === "admin";
+  const requests = manage && c.requests?.length ? `
+    <h2 class="group-label">Заявки на вступление · ${c.requests.length}</h2>
+    <ul class="people">${c.requests.map((p) => personRow({ ...p, groupTag: true }, esc(dirLine(p)), `
+      <button class="btn-sm primary" data-req-accept="${p.tg_id}">Принять</button>
+      <button class="btn-sm" data-req-decline="${p.tg_id}">Отклонить</button>`, "", "with-actions")).join("")}</ul>
+    <h2 class="group-label">Участники · ${c.member_list.length}</h2>` : "";
+  const invites = manage && c.invites.length ? `
+    <h2 class="group-label">Приглашены · ${c.invites.length}</h2>
+    <ul class="people">${c.invites.map((p) => personRow(p, esc(dirLine(p)),
+      `<button class="btn-sm" data-uninvite="${p.tg_id}">Отменить</button>`)).join("")}</ul>` : "";
+  const exit = !role ? ""
+    : role !== "owner"
+    ? `<button class="btn-text danger" id="club-leave">Выйти из клуба</button>`
+    : c.member_list.length === 1
+    ? `<button class="btn-text danger" id="club-delete">Удалить клуб</button>`
+    : `<p class="search-hint club-exit-note">Пока в клубе есть участники, удалить его нельзя, а владелец не может просто выйти. Можно передать права владельца другому участнику.</p>`;
+  host.innerHTML = `${requests}
+    <ul class="people">${c.member_list.map(memberRow).join("")}</ul>
+    ${!role ? `<p class="search-hint">Нажмите на участника, чтобы добавить его в друзья. Написать ему в Telegram можно, когда вступите в клуб.</p>`
+      : c.member_list.length > 1 ? `<p class="search-hint">Нажмите на участника, чтобы добавить его в друзья или написать ему в Telegram${
+      role === "owner" ? ". Там же можно сделать его админом, передать права владельца или исключить."
+      : role === "admin" ? ". Обычных участников там же можно исключить." : "."}</p>` : ""}
+    ${invites}${exit}`;
+
+  const base = `/api/clubs/${c.id}`;
+  host.querySelector("#club-leave")?.addEventListener("click", (e) => {
+    if (confirmTap(e.currentTarget, "Точно выйти? Нажмите ещё раз")) clubAct(e.currentTarget, () => api(`${base}/leave`, { method: "POST" }), clubToList);
+  });
+  host.querySelector("#club-delete")?.addEventListener("click", (e) => {
+    if (confirmTap(e.currentTarget, "Удалить навсегда? Нажмите ещё раз")) clubAct(e.currentTarget, () => api(base, { method: "DELETE" }), clubToList);
+  });
+  host.querySelectorAll("[data-req-accept]").forEach((b) => b.addEventListener("click", () =>
+    clubAct(b, () => api(`${base}/requests/${b.dataset.reqAccept}/accept`, { method: "POST" }), clubUpdated)));
+  host.querySelectorAll("[data-req-decline]").forEach((b) => b.addEventListener("click", () =>
+    clubAct(b, () => api(`${base}/requests/${b.dataset.reqDecline}`, { method: "DELETE" }), clubUpdated)));
+  host.querySelectorAll("[data-uninvite]").forEach((b) => b.addEventListener("click", () =>
+    clubAct(b, async () => { await api(`${base}/invites/${b.dataset.uninvite}`, { method: "DELETE" }); return api(base); }, clubUpdated)));
+  host.querySelectorAll("[data-member]").forEach((el) => {
+    const open = () => openMemberSheet(c.member_list.find((m) => m.tg_id === Number(el.dataset.member)));
+    el.addEventListener("click", open);
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
+  });
+}
+
+/* ---------- a club's feed: posts by the owner and admins, for members only ---------- */
+
+const SEEN_KEY = "msu.clubSeen";   // per club, the newest post this device has shown, for the "new posts" line
+function seenPosts() {
+  try { return JSON.parse(localStorage.getItem(SEEN_KEY)) || {}; } catch (_) { return {}; }
+}
+function markSeen(clubId, postId) {
+  const seen = seenPosts();
+  if (!postId || (seen[clubId] || 0) >= postId) return;
+  seen[clubId] = postId;
+  try { localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); } catch (_) {}
+}
+
+/** "сегодня, 14:05", "вчера, 9:30" or "12 октября, 18:00", in Moscow time */
+function postTime(utc) {
+  const d = new Date(`${utc.replace(" ", "T")}Z`);
+  const dayOf = (x) => x.toLocaleDateString("ru-RU", { timeZone: "Europe/Moscow" });
+  const time = d.toLocaleTimeString("ru-RU", { timeZone: "Europe/Moscow", hour: "numeric", minute: "2-digit" });
+  if (dayOf(d) === dayOf(new Date())) return `сегодня, ${time}`;
+  if (dayOf(d) === dayOf(new Date(Date.now() - 864e5))) return `вчера, ${time}`;
+  return `${d.toLocaleDateString("ru-RU", { timeZone: "Europe/Moscow", day: "numeric", month: "long" })}, ${time}`;
+}
+const linkify = (text) => esc(text).replace(/\bhttps?:\/\/[^\s<]+[^\s<.,:;!?)\]»"']/g, (url) => `<a href="${url}">${url}</a>`);
+
+const REACTION_SET = ["👍", "❤️", "😂", "😮", "😢", "🔥"]; /* taste-skill-ignore: reactions are emoji by nature, the owner asked for them */
+
+function postHtml(p) {
+  const member = p.member;
+  const reactions = p.reactions.map((r) => member ? `
+    <button class="reaction ${p.mine === r.emoji ? "mine" : ""}" data-react="${r.emoji}" aria-pressed="${p.mine === r.emoji}"
+            aria-label="${r.emoji}: ${r.count}">${r.emoji}<b class="num">${r.count}</b></button>`
+    : `<span class="reaction" aria-label="${r.emoji}: ${r.count}">${r.emoji}<b class="num">${r.count}</b></span>`).join("");
+  const talk = p.comments_off ? `<span class="comments-off">Комментарии выключены</span>`
+    : member ? `<button class="comments-btn" data-comments>${icon.comment}${p.comments ? `<b class="num">${p.comments}</b>` : "Комментировать"}</button>`
+    : p.comments ? `<button class="comments-btn" data-comments>${icon.comment}<b class="num">${p.comments}</b></button>` : "";
+  return `
+    <article class="post" data-post="${p.id}">
+      <header class="post-head">${p.club ? `
+        <button class="post-club" data-open-club="${p.club.id}" aria-label="Открыть клуб «${esc(p.club.name)}»">
+          ${clubAvatar(p.club, "post-avatar")}
+          <span class="post-who"><b>${esc(p.club.name)}</b><span class="post-meta">${esc(p.author.name)} · <time datetime="${esc(p.created_at)}Z">${postTime(p.created_at)}</time></span></span>
+        </button>` : `
+        ${personAvatar(p.author, "post-avatar")}
+        <div class="post-who"><b>${esc(p.author.name)}</b><span class="post-meta"><time datetime="${esc(p.created_at)}Z">${postTime(p.created_at)}</time>${
+          member && p.public ? `<span class="post-vis">${icon.globe}видна всем</span>` : ""}</span></div>`}
+        ${p.can_delete ? `<button class="post-del" data-del aria-label="Удалить запись">${icon.trash}</button>` : ""}
+      </header>
+      ${p.body ? `<p class="post-body">${linkify(p.body)}</p>` : ""}
+      ${p.photo_url ? `<button class="post-photo" data-photo aria-label="Открыть фото"><img src="${esc(p.photo_url)}" alt="" loading="lazy"></button>` : ""}
+      <footer class="post-foot">
+        <div class="reactions">${reactions}${member
+          ? `<button class="reaction add" data-react-pick aria-label="Поставить реакцию" aria-expanded="false">${icon.smile}</button>` : ""}
+        </div>
+        ${talk}
+      </footer>
+      ${member ? `<div class="react-picker" role="group" aria-label="Реакции" hidden>
+        ${REACTION_SET.map((e) => `<button data-react="${e}" aria-label="${e}">${e}</button>`).join("")}
+      </div>` : ""}
+    </article>`;
+}
+
+/** redraw one post in place (a reaction, a new comment count) without touching the rest of the feed */
+function updatePost(p, popped = "") {
+  const old = document.querySelector(`.post[data-post="${p.id}"]`);
+  if (!old) return;
+  old.outerHTML = postHtml(p);
+  const fresh = document.querySelector(`.post[data-post="${p.id}"]`);
+  if (popped) fresh.querySelector(`.reactions [data-react="${popped}"]`)?.classList.add("pop");
+  bindPost(fresh, p);
+}
+
+/** a post left the server: take it out of every feed that holds it and off the screen */
+function forgetPost(id) {
+  const v = state.clubView;
+  if (v?.feed) v.feed.posts = v.feed.posts.filter((x) => x.id !== id);
+  if (state.sharedFeed) state.sharedFeed.posts = state.sharedFeed.posts.filter((x) => x.id !== id);
+  document.querySelector(`.post[data-post="${id}"]`)?.remove();
+}
+
+function bindPost(article, p) {
+  const c = { id: p.club_id };
+  article.querySelector("[data-open-club]")?.addEventListener("click", () => openClub(p.club_id));
+  const picker = article.querySelector(".react-picker");
+  article.querySelector("[data-react-pick]")?.addEventListener("click", (e) => {
+    haptic();
+    picker.hidden = !picker.hidden;
+    e.currentTarget.setAttribute("aria-expanded", String(!picker.hidden));
+  });
+  article.querySelectorAll("[data-react]").forEach((b) => b.addEventListener("click", async () => {
+    haptic();
+    b.disabled = true;
+    try {
+      Object.assign(p, await api(`/api/clubs/${c.id}/posts/${p.id}/reaction`, { method: "POST", body: JSON.stringify({ emoji: b.dataset.react }) }));
+      updatePost(p, p.mine);
+    } catch (e) {
+      haptic("error");
+      b.disabled = false;
+      say(errText(e));
+    }
+  }));
+  article.querySelector("[data-comments]")?.addEventListener("click", () => openComments(p));
+  article.querySelector("[data-photo]")?.addEventListener("click", () => openPhoto(p.photo_url));
+  article.querySelectorAll(".post-body a").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); openOut(a.href); }));
+  const del = article.querySelector("[data-del]");
+  del?.addEventListener("click", async () => {
+    if (!del.dataset.sure) {
+      del.dataset.sure = "1";
+      del.classList.add("sure");
+      del.textContent = "Удалить?";
+      haptic();
+      return;
+    }
+    del.disabled = true;
+    try {
+      await api(`/api/clubs/${c.id}/posts/${p.id}`, { method: "DELETE" });
+      haptic("success");
+      forgetPost(p.id);
+      loadClubs();
+    } catch (e) {
+      haptic("error");
+      del.disabled = false;
+      say(errText(e));
+    }
+  });
+}
+
+async function renderFeed(host) {
+  const v = state.clubView;
+  const c = v.data;
+  const manage = c.role === "owner" || c.role === "admin";
+  const compose = manage ? `<button class="btn secondary compose-btn" id="post-new">${icon.pen}Написать в ленту</button>` : "";
+  const bindCompose = () => host.querySelector("#post-new")?.addEventListener("click", openComposer);
+  if (!v.feed) {
+    host.innerHTML = `${compose}<p class="options-note">Загружаем ленту…</p>`;
+    bindCompose();
+    try {
+      v.feed = await api(`/api/clubs/${c.id}/posts`);
+    } catch (_) {
+      if (state.clubView !== v || !host.isConnected) return;
+      host.innerHTML = `${compose}<p class="note feed-empty"><strong>Лента не загрузилась</strong>Проверьте интернет и откройте клуб ещё раз.</p>`;
+      bindCompose();
+      return;
+    }
+    if (state.clubView !== v || v.section !== "feed" || !host.isConnected) return;
+  }
+  const posts = v.feed.posts;
+  if (c.role) markSeen(c.id, posts[0]?.id);
+  host.innerHTML = `${compose}
+    ${!c.role && posts.length ? `<p class="search-hint feed-visitor">Это открытые записи клуба. Вступите, чтобы читать всё, ставить реакции и комментировать.</p>` : ""}
+    ${posts.length ? `<div class="feed">${posts.map(postHtml).join("")}</div>` : `
+      <p class="note feed-empty"><strong>${c.role ? "Здесь пока пусто" : "Открытых записей пока нет"}</strong>${
+        !c.role ? "Остальные записи видят только участники клуба."
+        : manage ? "Напишите первую запись: новость, анонс встречи или что-нибудь смешное. Решите, видна она всем или только участникам."
+        : "Когда владелец или админы что-нибудь напишут, записи появятся здесь."}</p>`}
+    ${v.feed.more ? `<button class="btn-text" id="posts-more">Показать ещё</button>` : ""}`;
+  bindCompose();
+  posts.forEach((p) => bindPost(host.querySelector(`.post[data-post="${p.id}"]`), p));
+
+  host.querySelector("#posts-more")?.addEventListener("click", async (e) => {
+    const b = e.currentTarget;
+    b.disabled = true;
+    b.textContent = "Загружаем…";
+    try {
+      const older = await api(`/api/clubs/${c.id}/posts?before=${posts[posts.length - 1].id}`);
+      v.feed = { ...v.feed, posts: [...posts, ...older.posts], more: older.more };
+      renderFeed(host);
+    } catch (_) {
+      b.disabled = false;
+      b.textContent = "Показать ещё";
+      say("Не получилось загрузить записи. Проверьте интернет.");
+    }
+  });
+}
+
+/* comments open in a sheet: every member writes, oldest first like a chat, the field stays at the bottom */
+const commentHtml = (cm) => `
+  <div class="comment">
+    ${personAvatar(cm.author, "comment-avatar")}
+    <div class="comment-main">
+      <div class="comment-who"><b>${esc(cm.author.name)}</b>${groupTag(cm.author.group)}<time>${postTime(cm.created_at)}</time></div>
+      <p class="comment-body">${linkify(cm.body)}</p>
+    </div>
+    ${cm.can_delete ? `<button class="post-del" data-cdel="${cm.id}" aria-label="Удалить комментарий">${icon.trash}</button>` : ""}
+  </div>`;
+
+function openComments(p) {
+  const c = { id: p.club_id, role: p.member };
+  haptic();
+  let list = null;   // null while loading
+  let draft = "";
+  let note = "";
+  const toBottom = (panel) => { panel.scrollTop = panel.scrollHeight; };
+  const draw = () => openSheet(`
+    <div class="sheet-head"><div>
+      <h2 id="sheet-title">Комментарии${list ? ` · ${list.length}` : ""}</h2>
+      ${p.body ? `<p>${esc(p.body.length > 90 ? `${p.body.slice(0, 90)}…` : p.body)}</p>` : ""}
+    </div></div>
+    <div class="comments" data-post="${p.id}">${list === null ? `<p class="options-note">Загружаем комментарии…</p>`
+      : list.length ? list.map(commentHtml).join("") : `<p class="search-hint">Комментариев пока нет. Напишите первый.</p>`}</div>
+    <p class="err" id="comment-err" ${note ? "" : "hidden"}>${esc(note)}</p>
+    ${p.comments_off ? `<p class="search-hint">К этой записи комментарии выключены.</p>`
+      : !c.role ? `<p class="search-hint">Комментировать могут участники клуба.</p>` : `
+    <form class="comment-form" id="comment-form" autocomplete="off">
+      <textarea id="comment-body" rows="1" maxlength="1000" placeholder="Написать комментарий" aria-label="Комментарий">${esc(draft)}</textarea>
+      <button class="comment-send" type="submit" aria-label="Отправить">${icon.send}</button>
+    </form>`}`, (panel) => {
+    const field = panel.querySelector("#comment-body");
+    const grow = () => { field.style.height = "auto"; field.style.height = `${Math.min(field.scrollHeight, 120)}px`; };
+    if (field) { grow(); field.addEventListener("input", () => { draft = field.value; grow(); }); }
+    panel.querySelector("#comment-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!draft.trim()) return;
+      const send = panel.querySelector(".comment-send");
+      send.disabled = true;
+      try {
+        const cm = await api(`/api/clubs/${c.id}/posts/${p.id}/comments`, { method: "POST", body: JSON.stringify({ body: draft }) });
+        haptic("success");
+        list = [...(list || []), cm];
+        draft = "";
+        note = "";
+      } catch (err) {
+        haptic("error");
+        note = errText(err, "Не получилось отправить. Проверьте интернет.");
+      }
+      p.comments = list ? list.length : p.comments;
+      updatePost(p);
+      draw();
+      toBottom(sheet.querySelector(".sheet-panel"));
+    });
+    panel.querySelectorAll("[data-cdel]").forEach((b) => b.addEventListener("click", async () => {
+      if (!b.dataset.sure) {
+        b.dataset.sure = "1";
+        b.classList.add("sure");
+        b.textContent = "Удалить?";
+        haptic();
+        return;
+      }
+      b.disabled = true;
+      try {
+        await api(`/api/clubs/${c.id}/posts/${p.id}/comments/${b.dataset.cdel}`, { method: "DELETE" });
+        haptic("success");
+        list = list.filter((x) => x.id !== Number(b.dataset.cdel));
+        p.comments = list.length;
+        updatePost(p);
+        draw();
+      } catch (err) {
+        haptic("error");
+        b.disabled = false;
+        say(errText(err));
+      }
+    }));
+    panel.querySelectorAll(".comment-body a").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); openOut(a.href); }));
+  });
+  draw();
+  api(`/api/clubs/${c.id}/posts/${p.id}/comments`).then((r) => {
+    list = r.comments;
+    p.comments = list.length;
+    updatePost(p);
+  }).catch(() => {
+    list = [];
+    note = "Не получилось загрузить комментарии. Проверьте интернет.";
+  }).finally(() => {
+    if (sheet.hidden || !sheet.querySelector(`.comments[data-post="${p.id}"]`)) return;   // closed, or another sheet took its place
+    draw();
+    toBottom(sheet.querySelector(".sheet-panel"));
+  });
+}
+
+/** a photo from the feed over everything; a tap or "back" closes it */
+function openPhoto(url) {
+  haptic();
+  const before = backHandler;
+  const el = document.createElement("div");
+  el.className = "photo-view";
+  el.setAttribute("role", "dialog");
+  el.setAttribute("aria-modal", "true");
+  el.setAttribute("aria-label", "Фото");
+  el.innerHTML = `<img src="${esc(url)}" alt="">`;
+  document.body.append(el);
+  const close = () => { el.remove(); setBack(before); };
+  el.addEventListener("click", close);
+  setBack(close);
+}
+
+/** a photo for the feed: its own shape, at most `max` on the long side */
+async function scaledJpeg(file, max = 1600) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, fail) => {
+      const i = new Image();
+      i.onload = () => ok(i);
+      i.onerror = fail;
+      i.src = url;
+    });
+    const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = Object.assign(document.createElement("canvas"),
+      { width: Math.round(img.naturalWidth * k), height: Math.round(img.naturalHeight * k) });
+    canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+    return await new Promise((ok) => canvas.toBlob(ok, "image/jpeg", 0.86));
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+const blobBase64 = (blob) => new Promise((ok, fail) => {
+  const r = new FileReader();
+  r.onload = () => ok(String(r.result).split(",")[1]);
+  r.onerror = fail;
+  r.readAsDataURL(blob);
+});
+
+function openComposer() {
+  const c = state.clubView?.data;
+  if (!c) return;
+  haptic();
+  const draft = { body: "", photo: null, comments: true, public: false };   // photo: { blob, url }
+  const audience = () => draft.public
+    ? `Её увидят все, кто откроет клуб «${esc(c.name)}», даже не вступив.`
+    : `Её увидят только участники клуба «${esc(c.name)}».`;
+  const dropPhoto = () => { if (draft.photo) URL.revokeObjectURL(draft.photo.url); draft.photo = null; };
+  const draw = (note = "") => openSheet(`
+    <div class="sheet-head"><div>
+      <h2 id="sheet-title">Новая запись</h2>
+      <p id="post-audience">${audience()}</p>
+    </div></div>
+    <form class="field post-form" id="post-form" novalidate>
+      <textarea id="post-body" maxlength="2000" rows="5" aria-label="Текст записи" placeholder="Новость, анонс встречи или что-нибудь смешное">${esc(draft.body)}</textarea>
+      <p class="field-hint num"><span id="post-count">${draft.body.length}</span> из 2000</p>
+      ${draft.photo ? `<div class="post-pick"><img src="${draft.photo.url}" alt="Выбранное фото"><button type="button" class="btn-sm" id="post-photo-drop">Убрать фото</button></div>` : ""}
+      <div class="post-tools"><button type="button" class="btn-sm" id="post-photo-pick">${icon.camera}${draft.photo ? "Другое фото" : "Добавить фото"}</button></div>
+      <input type="file" id="post-file" accept="image/*" hidden>
+      <ul class="options post-options">
+        ${switchRow("post-public", "Видна всем", "Запись увидят и те, кто ещё не вступил в клуб", draft.public)}
+        ${switchRow("post-comments", "Комментарии", "Участники смогут обсуждать запись", draft.comments)}
+      </ul>
+      <p class="err" id="post-err" ${note ? "" : "hidden"}>${esc(note)}</p>
+      <button class="btn" type="submit" id="post-send">Опубликовать</button>
+    </form>`, (panel) => {
+    const text = panel.querySelector("#post-body");
+    text.addEventListener("input", () => {
+      draft.body = text.value;
+      panel.querySelector("#post-count").textContent = text.value.length;
+      panel.querySelector("#post-err").hidden = true;
+    });
+    const file = panel.querySelector("#post-file");
+    panel.querySelector("#post-photo-pick").addEventListener("click", () => { haptic(); file.click(); });
+    file.addEventListener("change", async () => {
+      const f = file.files[0];
+      if (!f) return;
+      try {
+        const blob = await scaledJpeg(f);
+        dropPhoto();
+        draft.photo = { blob, url: URL.createObjectURL(blob) };
+        draw();
+      } catch (_) {
+        draw("Не получилось открыть это фото. Выберите другое.");
+      }
+    });
+    panel.querySelector("#post-photo-drop")?.addEventListener("click", () => { haptic(); dropPhoto(); draw(); });
+    const sw = panel.querySelector('[data-set="post-comments"]');
+    sw.addEventListener("click", () => {
+      haptic();
+      draft.comments = !draft.comments;
+      sw.setAttribute("aria-checked", String(draft.comments));
+    });
+    const open = panel.querySelector('[data-set="post-public"]');
+    open.addEventListener("click", () => {
+      haptic();
+      draft.public = !draft.public;
+      open.setAttribute("aria-checked", String(draft.public));
+      panel.querySelector("#post-audience").innerHTML = audience();
+    });
+    panel.querySelector("#post-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!draft.body.trim() && !draft.photo) { haptic("error"); return draw("Напишите что-нибудь или добавьте фото."); }
+      const send = panel.querySelector("#post-send");
+      send.disabled = true;
+      send.textContent = "Публикуем…";
+      let post;
+      try {
+        post = await api(`/api/clubs/${c.id}/posts`, { method: "POST", body: JSON.stringify({
+          body: draft.body, photo: draft.photo ? await blobBase64(draft.photo.blob) : null, comments_off: !draft.comments, public: draft.public }) });
+      } catch (err) {
+        haptic("error");
+        return draw(errText(err, "Не получилось опубликовать. Проверьте интернет."));
+      }
+      haptic("success");
+      dropPhoto();
+      closeSheet();
+      if (post.public) state.sharedFeed = null;
+      const v = state.clubView;
+      if (v?.data?.id === c.id) {
+        if (v.feed) v.feed.posts.unshift(post);
+        v.section = "feed";
+        renderClubPage();
+      }
+      loadClubs();
+    });
+  });
+  draw();
+}
+
+function memberRow(m) {
+  const self = m.tg_id === state.me.tg_id;
+  const tag = ROLE_NAME[m.role] ? `<span class="role-tag ${m.role}">${ROLE_NAME[m.role]}</span>` : "";
+  return personRow({ ...m, name: self ? `${m.name} (вы)` : m.name, groupTag: true }, esc(dirLine(m)),
+    tag + (self ? "" : `<span class="row-go">${icon.right}</span>`),
+    self ? "" : `role="button" tabindex="0" data-member="${m.tg_id}"`);
+}
+
+/* a member's card: anyone in the club can ask them to be friends or write to them in Telegram;
+   the owner and admins also manage them here. The @tag is fetched only for the chat link, never shown. */
+function openMemberSheet(m) {
+  const c = state.clubView?.data;
+  if (!m || !c) return;
+  haptic();
+  const owner = c.role === "owner";
+  const canManage = owner ? m.role !== "owner" : c.role === "admin" && m.role === "member";
+  const rel = m.relation;
+  const friendPart = rel === "friend" ? `<p class="member-rel">${icon.check}Вы друзья</p>`
+    : rel === "outgoing" ? `<p class="member-rel">Заявка в друзья отправлена</p>`
+    : `<button class="btn" data-f="${rel === "incoming" ? "accept" : "add"}">${rel === "incoming" ? "Принять заявку в друзья" : "Добавить в друзья"}</button>`;
+  const dm = m.can_dm
+    ? `<button class="btn chat-btn ${rel === "friend" || rel === "outgoing" ? "" : "secondary"}" data-dm>${icon.plane}Написать в Telegram</button>`
+    : !c.role ? `<p class="search-hint">Написать участнику в Telegram можно, когда вступите в клуб.</p>`
+    : `<p class="search-hint">У этого человека нет тега в Telegram, поэтому написать ему отсюда не получится.</p>`;
+  // the chat link is asked for as the card opens, so the tap on "write" can open Telegram straight away
+  const contact = m.can_dm ? api(`/api/clubs/${c.id}/members/${m.tg_id}/contact`).catch((e) => e) : null;
+  openSheet(`
+    <div class="sheet-head friend-head">
+      ${personAvatar(m)}
+      <div><h2 id="sheet-title">${esc(m.name)}</h2><p>${esc([ROLE_NAME[m.role] || "Участник", groupLine(m)].join(" · "))}</p></div>
+    </div>
+    ${m.bio ? `<p class="person-bio">${esc(m.bio)}</p>` : ""}
+    <div class="sheet-actions">${friendPart}${dm}</div>
+    ${canManage ? `
+      <h3 class="group-label">Управление клубом</h3>
+      ${owner ? `<div class="sheet-actions">
+        <button class="btn secondary" data-m="role">${m.role === "admin" ? "Снять с админов" : "Сделать админом"}</button>
+        <button class="btn secondary" data-m="transfer">Передать права владельца</button>
+      </div>
+      <p class="search-hint">Если передать права, этот человек станет владельцем, а вы останетесь в клубе админом.</p>` : ""}
+      <button class="btn-text danger" data-m="kick">Исключить из клуба</button>` : ""}`, (panel) => {
+    panel.querySelector("[data-f]")?.addEventListener("click", async (e) => {
+      const b = e.currentTarget;
+      b.disabled = true;
+      try {
+        const r = await api(`/api/friends/${m.tg_id}${b.dataset.f === "accept" ? "/accept" : ""}`, { method: "POST" });
+        haptic("success");
+        m.relation = r.relation;
+        loadFriends();
+        openMemberSheet(m);
+      } catch (err) {
+        haptic("error");
+        b.disabled = false;
+        say(errText(err));
+      }
+    });
+    panel.querySelector("[data-dm]")?.addEventListener("click", async () => {
+      const r = await contact;
+      if (r instanceof Error || !r?.url) { haptic("error"); say(errText(r, "Не получилось открыть чат. Проверьте интернет.")); return; }
+      haptic();
+      openOut(r.url);
+    });
+    panel.querySelectorAll("[data-m]").forEach((b) => b.addEventListener("click", async () => {
+      const what = b.dataset.m;
+      if (what !== "role" && !b.dataset.sure) {
+        b.dataset.sure = "1";
+        b.textContent = what === "transfer" ? "Точно передать? Нажмите ещё раз" : "Точно исключить? Нажмите ещё раз";
+        haptic();
+        return;
+      }
+      b.disabled = true;
+      const base = `/api/clubs/${c.id}`;
+      try {
+        const data = what === "role"
+          ? await api(`${base}/members/${m.tg_id}/role`, { method: "POST", body: JSON.stringify({ role: m.role === "admin" ? "member" : "admin" }) })
+          : what === "transfer"
+          ? await api(`${base}/transfer/${m.tg_id}`, { method: "POST" })
+          : await api(`${base}/members/${m.tg_id}`, { method: "DELETE" });
+        haptic("success");
+        closeSheet();
+        clubUpdated(data);
+      } catch (e) {
+        haptic("error");
+        b.disabled = false;
+        say(errText(e));
+      }
+    }));
+  });
+}
+
+/* inviting: a friend from the list, or anyone by their exact @tag */
+async function openInviteSheet() {
+  haptic();
+  if (!state.friends) await loadFriends();
+  let found = null;   // the person found by tag, or "none"
+  const draw = () => {
+    const c = state.clubView?.data;
+    if (!c) return;
+    const inClub = new Set(c.member_list.map((m) => m.tg_id));
+    const invited = new Set((c.invites || []).map((p) => p.tg_id));
+    const status = (p) => p.tg_id === state.me.tg_id ? `<span class="person-state">Это вы</span>`
+      : inClub.has(p.tg_id) ? `<span class="person-state">В клубе</span>`
+      : invited.has(p.tg_id) ? `<span class="person-state">Отправлено</span>`
+      : `<button class="btn-sm primary" data-invite="${p.tg_id}">Пригласить</button>`;
+    const friends = state.friends?.friends || [];
+    const result = found === "none"
+      ? `<p class="note"><strong>Никого не нашли</strong>Проверьте тег. Найти можно только тех, кто уже открывал это приложение.</p>`
+      : found ? `<ul class="people found">${personRow(found, esc(groupLine(found)), status(found))}</ul>` : "";
+    openSheet(`
+      <div class="sheet-head"><div>
+        <h2 id="sheet-title">Пригласить в клуб</h2>
+        <p>Приглашение появится у человека в разделе «Вступить».</p>
+      </div></div>
+      <form class="friend-search" id="invite-search" autocomplete="off">
+        <input id="invite-q" name="q" type="search" autocapitalize="off" spellcheck="false" enterkeyhint="search"
+               placeholder="@тег в Telegram" aria-label="Тег в Telegram">
+        <button class="btn inline" type="submit">Найти</button>
+      </form>
+      ${result}
+      ${friends.length ? `<h2 class="group-label">Ваши друзья</h2>
+        <ul class="people invite-list">${friends.map((p) => personRow(p, esc(dirLine(p)), status(p))).join("")}</ul>`
+        : `<p class="search-hint">Друзей пока нет, но пригласить можно любого студента по тегу.</p>`}`, (panel) => {
+      panel.querySelector("#invite-search").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const q = e.currentTarget.q.value.trim();
+        if (!q) return;
+        try {
+          found = (await api(`/api/users/find?username=${encodeURIComponent(q)}`)).user || "none";
+        } catch (err) {
+          haptic("error");
+          say(errText(err, "Не получилось найти. Проверьте интернет."));
+          return;
+        }
+        draw();
+      });
+      panel.querySelectorAll("[data-invite]").forEach((b) => b.addEventListener("click", async () => {
+        b.disabled = true;
+        try {
+          state.clubView.data = await api(`/api/clubs/${c.id}/invites/${b.dataset.invite}`, { method: "POST" });
+          haptic("success");
+          renderClubs();
+          draw();
+        } catch (e) {
+          haptic("error");
+          b.disabled = false;
+          say(errText(e));
+        }
+      }));
+    });
+  };
+  draw();
+}
+
+/* ---------- founding a club, and its settings: one form ---------- */
+
+function openClubForm(club) {
+  haptic();
+  state.clubView = {
+    kind: "form",
+    club,
+    back: state.clubView,
+    draft: {
+      name: club?.name || "",
+      about: club?.about || "",
+      category: club?.category || "",
+      visibility: club?.visibility || "public",
+      chat_url: club?.chat_url ? club.chat_url.replace(/^https:\/\//, "") : "",
+    },
+    photo: null,   // { blob, url } of a picked photo, or "remove"
+  };
+  window.scrollTo(0, 0);
+  renderClubs();
+}
+
+function renderClubForm() {
+  const v = state.clubView, d = v.draft, editing = Boolean(v.club);
+  setBack(closeClubView);
+  const hasPhoto = v.photo?.url || (v.photo !== "remove" && v.club?.photo_url);
+  const preview = v.photo?.url
+    ? `<span class="avatar club-avatar big" style="--c: var(--hue-${(CLUB_CATS[d.category] || CLUB_CATS.other)[1]})"><img src="${v.photo.url}" alt=""></span>`
+    : clubAvatar({ name: d.name.trim() || "Клуб", category: d.category || "other", photo_url: v.photo === "remove" ? "" : v.club?.photo_url || "" }, "big");
+  app.innerHTML = `
+    ${backLink(editing ? "Клуб" : "Клубы")}
+    <h1 class="view-title">${editing ? "Настройки клуба" : "Новый клуб"}</h1>
+    <form class="club-form" id="club-form" novalidate autocomplete="off">
+      <div class="club-photo">
+        ${preview}
+        <div class="club-photo-actions">
+          <button type="button" class="btn-sm" id="club-photo-pick">${hasPhoto ? "Сменить фото" : "Выбрать фото"}</button>
+          ${hasPhoto ? `<button type="button" class="btn-sm" id="club-photo-drop">Убрать</button>` : ""}
+        </div>
+        <input type="file" id="club-photo-file" accept="image/*" hidden>
+      </div>
+      <div class="field">
+        <label for="club-name">Название</label>
+        <input id="club-name" maxlength="48" autocapitalize="sentences" enterkeyhint="next" placeholder="Например, Шахматный клуб" value="${esc(d.name)}">
+      </div>
+      <div class="field">
+        <label for="club-about">Описание</label>
+        <textarea id="club-about" maxlength="600" rows="4" placeholder="Чем занимаетесь, когда и где встречаетесь">${esc(d.about)}</textarea>
+        <p class="field-hint num"><span id="about-count">${d.about.length}</span> из 600</p>
+      </div>
+      <div class="field">
+        <span class="label" id="cat-label">Направленность</span>
+        <div class="cat-chips" role="radiogroup" aria-labelledby="cat-label">${Object.entries(CLUB_CATS).map(([k, [label, hue]]) =>
+          `<button type="button" role="radio" data-cat="${k}" aria-checked="${d.category === k}" style="--c: var(--hue-${hue})">${label}</button>`).join("")}</div>
+      </div>
+      <div class="field">
+        <span class="label" id="vis-label">Кто может вступить</span>
+        <ul class="options" role="radiogroup" aria-labelledby="vis-label">${Object.entries(CLUB_VIS).map(([k, [label, hint]]) => `
+          <li><button type="button" role="radio" data-vis="${k}" aria-checked="${d.visibility === k}">
+            <span>${label}<small>${hint}</small></span><span class="check">${icon.check}</span>
+          </button></li>`).join("")}</ul>
+      </div>
+      <div class="field">
+        <label for="club-chat">Чат в Telegram</label>
+        <input id="club-chat" inputmode="url" autocapitalize="off" spellcheck="false" placeholder="t.me/название_чата" value="${esc(d.chat_url)}">
+        <p class="field-hint">Необязательно. Ссылку увидят только участники, у них появится кнопка «Открыть чат клуба».</p>
+      </div>
+      <p class="err" id="club-err" hidden></p>
+      <button class="btn club-submit" type="submit" id="club-save">${editing ? "Сохранить" : "Создать клуб"}</button>
+    </form>`;
+  document.getElementById("club-back")?.addEventListener("click", closeClubView);
+
+  const form = document.getElementById("club-form");
+  const err = document.getElementById("club-err");
+  const fail = (msg) => { err.textContent = msg; err.hidden = false; haptic("error"); };
+  form.querySelector("#club-name").addEventListener("input", (e) => { d.name = e.target.value; err.hidden = true; });
+  form.querySelector("#club-about").addEventListener("input", (e) => {
+    d.about = e.target.value;
+    document.getElementById("about-count").textContent = d.about.length;
+  });
+  form.querySelector("#club-chat").addEventListener("input", (e) => { d.chat_url = e.target.value; err.hidden = true; });
+  form.querySelectorAll("[data-cat]").forEach((b) => b.addEventListener("click", () => {
+    haptic();
+    d.category = b.dataset.cat;
+    form.querySelectorAll("[data-cat]").forEach((x) => x.setAttribute("aria-checked", String(x === b)));
+  }));
+  form.querySelectorAll("[data-vis]").forEach((b) => b.addEventListener("click", () => {
+    haptic();
+    d.visibility = b.dataset.vis;
+    form.querySelectorAll("[data-vis]").forEach((x) => x.setAttribute("aria-checked", String(x === b)));
+  }));
+  const file = form.querySelector("#club-photo-file");
+  form.querySelector("#club-photo-pick").addEventListener("click", () => { haptic(); file.click(); });
+  file.addEventListener("change", async () => {
+    const f = file.files[0];
+    if (!f) return;
+    try {
+      const blob = await squareJpeg(f);
+      if (v.photo?.url) URL.revokeObjectURL(v.photo.url);
+      v.photo = { blob, url: URL.createObjectURL(blob) };
+      renderClubForm();
+    } catch (_) {
+      fail("Не получилось открыть это фото. Выберите другое.");
+    }
+  });
+  form.querySelector("#club-photo-drop")?.addEventListener("click", () => {
+    haptic();
+    if (v.photo?.url) URL.revokeObjectURL(v.photo.url);
+    v.photo = v.club?.photo_url ? "remove" : null;
+    renderClubForm();
+  });
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (d.name.trim().length < 2) return fail("Придумайте название, хотя бы два символа.");
+    const btn = document.getElementById("club-save");
+    btn.disabled = true;
+    btn.textContent = "Сохраняем…";
+    const body = JSON.stringify({ name: d.name, about: d.about, category: d.category || "other", visibility: d.visibility, chat_url: d.chat_url });
+    let data;
+    try {
+      data = editing
+        ? await api(`/api/clubs/${v.club.id}/settings`, { method: "POST", body })
+        : await api("/api/clubs", { method: "POST", body });
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = editing ? "Сохранить" : "Создать клуб";
+      return fail(errText(e));
+    }
+    let photoFailed = false;
+    try {
+      if (v.photo?.blob) data = await api(`/api/clubs/${data.id}/avatar`, { method: "POST", body: v.photo.blob });
+      else if (v.photo === "remove") data = await api(`/api/clubs/${data.id}/avatar`, { method: "DELETE" });
+    } catch (_) {
+      photoFailed = true;
+    }
+    if (v.photo?.url) URL.revokeObjectURL(v.photo.url);
+    haptic("success");
+    state.clubView = { kind: "club", id: data.id, data };
+    window.scrollTo(0, 0);
+    loadClubs();
+    renderClubs();
+    if (photoFailed) say("Клуб сохранён, но фото не загрузилось. Попробуйте ещё раз в настройках клуба.");
+  });
 }
 
 /* ---------- screen: profile ---------- */
@@ -1363,6 +2595,7 @@ function bindProfileBody() {
   bindFriends();
   document.getElementById("edit-profile")?.addEventListener("click", () => { haptic(); startOnboarding(true); });
   document.getElementById("edit-nick")?.addEventListener("click", openNickSheet);
+  document.getElementById("edit-bio")?.addEventListener("click", openBioSheet);
   document.getElementById("edit-avatar")?.addEventListener("click", openAvatarSheet);
   app.querySelectorAll("[data-theme-pref]").forEach((b) => b.addEventListener("click", (e) => {
     haptic();
@@ -1372,6 +2605,7 @@ function bindProfileBody() {
   // notifications: each control saves itself
   const st = state.settings;
   app.querySelector('[data-set="remind_all"]')?.addEventListener("click", () => { haptic(); saveSetting({ remind_all: !st.remind_all }); });
+  app.querySelector('[data-set="show_club"]')?.addEventListener("click", () => { haptic(); saveSetting({ show_club: !st.show_club }); });
   app.querySelectorAll("[data-lead]").forEach((b) => b.addEventListener("click", () => { haptic(); saveSetting({ remind_lead: Number(b.dataset.lead) }); }));
   app.querySelector('[data-set="digest"]')?.addEventListener("click", () => { haptic(); saveSetting({ digest_time: st.digest_time ? "off" : "07:30" }); });
   app.querySelectorAll("[data-digest]").forEach((b) => b.addEventListener("click", () => { haptic(); saveSetting({ digest_time: b.dataset.digest }); }));
@@ -1387,6 +2621,54 @@ function bindProfileBody() {
     haptic();
     const url = `https://t.me/${DEVELOPER}`;
     if (tg?.openTelegramLink && inTelegram) tg.openTelegramLink(url); else window.open(url, "_blank");
+  });
+}
+
+/* ---------- about yourself: a few words friends and club members see ---------- */
+
+function openBioSheet() {
+  haptic();
+  const me = state.me;
+  openSheet(`
+    <div class="sheet-head"><div>
+      <h2 id="sheet-title">О себе</h2>
+      <p>Пара слов о вас: чем увлекаетесь, чем можете помочь. Это видят друзья и участники вашего клуба.</p>
+    </div></div>
+    <form class="field nick-form" id="bio-form" novalidate>
+      <textarea id="bio" maxlength="200" rows="4" aria-label="О себе" placeholder="Например, играю в шахматы и могу помочь с матанализом">${esc(me.bio || "")}</textarea>
+      <p class="field-hint num"><span id="bio-count">${(me.bio || "").length}</span> из 200</p>
+      <p class="err" id="bio-err" hidden></p>
+      <button class="btn" type="submit">Сохранить</button>
+    </form>
+    ${me.bio ? `<button class="btn-text" id="bio-clear">Убрать описание</button>` : ""}`, (panel) => {
+    const form = panel.querySelector("#bio-form");
+    const input = form.querySelector("#bio");
+    const err = form.querySelector("#bio-err");
+    const save = async (bio) => {
+      const btn = form.querySelector(".btn");
+      btn.disabled = true;
+      try {
+        state.me = await api("/api/profile/bio", { method: "POST", body: JSON.stringify({ bio }) });
+        haptic("success");
+        closeSheet();
+        updateProfileBody();
+      } catch (e) {
+        btn.disabled = false;
+        err.textContent = errText(e, "Не получилось сохранить. Проверьте интернет.");
+        err.hidden = false;
+        haptic("error");
+      }
+    };
+    input.addEventListener("input", () => {
+      err.hidden = true;
+      panel.querySelector("#bio-count").textContent = input.value.length;
+    });
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      input.blur();
+      save(input.value);
+    });
+    panel.querySelector("#bio-clear")?.addEventListener("click", () => save(""));
   });
 }
 
@@ -1628,11 +2910,20 @@ function nowLine(n) {
     : `${dot}В ${clock(n.start)}: ${esc(n.subject)}${room}`;
 }
 
-function personRow(p, sub, actions = "", attrs = "") {
+/** a group's own hue, from its name: everyone from ПМ-101 wears the same colour, and it stays the same */
+function groupHue(name) {
+  let h = 7;
+  for (const ch of name) h = (h * 31 + ch.codePointAt(0)) % 1000003;
+  return Math.round((h * 137.508) % 360);
+}
+const groupTag = (name) => name ? `<small class="group-tag" style="--gh: ${groupHue(name)}">${esc(name)}</small>` : "";
+
+function personRow(p, sub, actions = "", attrs = "", cls = "") {
   return `
-    <li class="person" ${attrs}>
+    <li class="person ${cls}" ${attrs}>
       ${personAvatar(p)}
-      <div class="person-text"><b>${esc(p.name)}</b><span>${sub}</span></div>
+      <div class="person-text">${p.groupTag ? `<div class="person-name"><b>${esc(p.name)}</b>${groupTag(p.group)}</div>` : `<b>${esc(p.name)}</b>`}${p.clubs?.length ? `<div class="person-club">${p.clubs.slice(0, 2).map(clubPill).join("")}${
+        p.clubs.length > 2 ? `<small class="club-more">+${p.clubs.length - 2}</small>` : ""}</div>` : ""}<span>${sub}</span></div>
       ${actions ? `<div class="person-actions">${actions}</div>` : ""}
     </li>`;
 }
@@ -1661,7 +2952,7 @@ function friendsView() {
   const incoming = f.incoming.length ? `
     <h2 class="group-label">Хотят добавить вас</h2>
     <ul class="people">${f.incoming.map((p) => personRow(p, esc(groupLine(p)),
-      actionButton("accept", p.tg_id, "Принять", "primary") + actionButton("decline", p.tg_id, "Отклонить"))).join("")}</ul>` : "";
+      actionButton("accept", p.tg_id, "Принять", "primary") + actionButton("decline", p.tg_id, "Отклонить"), "", "with-actions")).join("")}</ul>` : "";
   const friends = f.friends.length ? `
     <h2 class="group-label">Друзья · ${f.friends.length}</h2>
     <ul class="people">${f.friends.map((p) => personRow(p,
@@ -1743,7 +3034,7 @@ async function friendAction(act, id) {
 
 /* the pop-up when someone wants to add you */
 function showFriendNotice() {
-  if (state.ob || !state.friends || document.getElementById("friend-notice")) return;
+  if (state.ob || !state.friends || document.querySelector(".notice")) return;
   const p = state.friends.incoming.find((x) => !noticeShown.has(x.tg_id));
   if (!p) return;
   noticeShown.add(p.tg_id);
@@ -1766,7 +3057,7 @@ function showFriendNotice() {
   document.body.append(el);
   const close = () => {
     el.classList.add("out");
-    setTimeout(() => { el.remove(); showFriendNotice(); }, 260);
+    setTimeout(() => { el.remove(); showFriendNotice(); showClubNotice(); }, 260);
   };
   el.querySelector(".notice-close").addEventListener("click", close);
   el.querySelectorAll("[data-n]").forEach((b) => b.addEventListener("click", async () => {
@@ -1788,10 +3079,11 @@ async function openFriendSheet(p) {
     return `
     <div class="sheet-head friend-head">
       ${personAvatar(p)}
-      <div><h2 id="sheet-title">${esc(p.name)}</h2><p>${esc(groupLine(p))}</p></div>
+      <div><h2 id="sheet-title">${esc(p.name)}</h2><p>${esc(groupLine(p))}</p>${cur.clubs?.length ? `<p class="sheet-club">${cur.clubs.map(clubPill).join("")}</p>` : ""}</div>
       ${flameButton(cur, "big")}
     </div>
-    <p class="flame-line" data-flame-text="${p.tg_id}">${esc(flameText(cur.flame))}</p>`;
+    <p class="flame-line" data-flame-text="${p.tg_id}">${esc(flameText(cur.flame))}</p>
+    ${cur.bio ? `<p class="person-bio">${esc(cur.bio)}</p>` : ""}`;
   };
   openSheet(`${head()}<p class="options-note">Загружаем расписание…</p>`);
   let lessons;
@@ -1875,7 +3167,7 @@ async function saveSetting(patch) {
 }
 
 const switchRow = (id, label, hint, on) => `
-  <li><button data-set="${id}" role="switch" aria-checked="${on}">
+  <li><button type="button" data-set="${id}" role="switch" aria-checked="${on}">
     <span>${label}<small>${hint}</small></span><span class="switch" aria-hidden="true"></span>
   </button></li>`;
 const chipsRow = (label, items) => `
@@ -1893,6 +3185,20 @@ function notificationsSection() {
       ${st.remind_all ? chipsRow("Заранее", leads) : ""}
       ${switchRow("digest", "Утренняя сводка", "Пары на день; в дни без пар бот молчит", Boolean(st.digest_time))}
       ${st.digest_time ? chipsRow("Во сколько", times) : ""}
+    </ul>`;
+}
+
+function friendsSettingsSection() {
+  const st = state.settings;
+  if (!st || st.failed) return "";
+  const my = state.clubs?.my || [];
+  return `
+    <h2 class="group-label">Друзья</h2>
+    <ul class="options">
+      ${switchRow("show_club", "Показывать мои клубы друзьям", my.length === 1
+        ? `Друзья увидят «${esc(my[0].name)}» рядом с вашим именем`
+        : my.length ? "Друзья увидят ваши клубы рядом с вашим именем"
+        : "Когда вступите в клубы, друзья увидят их рядом с вашим именем", st.show_club)}
     </ul>`;
 }
 
@@ -1921,6 +3227,8 @@ function settingsView() {
       <li><button id="open-calendar"><span>Добавить в календарь<small>Google, Apple и другие календари</small></span>${icon.right}</button></li>
       <li><button id="refresh-now"><span>Обновить расписание<small id="synced-note">${esc(synced)}</small></span><span class="action-text" id="refresh-label">Обновить</span></button></li>
     </ul>
+
+    ${friendsSettingsSection()}
 
     <h2 class="group-label">Тема оформления</h2>
     <ul class="options" role="radiogroup" aria-label="Тема оформления">
@@ -2118,15 +3426,18 @@ function profileView() {
         ${avatarHtml(me)}<span class="avatar-badge" aria-hidden="true">${icon.camera}</span>
       </button>
       <div>
-        <h1>${esc(myName(me))}</h1>
+        <div class="profile-name"><h1>${esc(myName(me))}</h1>${groupTag(g?.name)}</div>
         <p>${me.username ? `@${esc(me.username)} · ` : ""}аккаунт Telegram</p>
       </div>
     </div>
+    ${me.bio
+      ? `<button class="profile-bio" id="edit-bio" aria-label="Изменить описание о себе">${esc(me.bio)}</button>`
+      : `<button class="profile-bio empty" id="edit-bio">Расскажите о себе: чем увлекаетесь, чем можете помочь</button>`}
     <ul class="rows account">
       <li class="tap"><button id="edit-nick"><span>Ник</span>${me.nickname ? `<b>${esc(me.nickname)}</b>` : `<b class="unset">не задан</b>`}${icon.right}</button></li>
       <li class="locked"><span>Тег в Telegram</span><b>${me.username ? `@${esc(me.username)}` : "нет"}</b>${icon.lock}</li>
     </ul>
-    <p class="search-hint">Ник и фото видят друзья, менять их можно когда угодно. Тег меняется только в самом Telegram: по нему вас находят.</p>
+    <p class="search-hint">Ник, фото и описание видят друзья, менять их можно когда угодно. Тег меняется только в самом Telegram: по нему вас находят.</p>
     ${semesterCard()}
     <ul class="rows">
       <li><span>Имя</span><b>${esc(me.real_name)}</b></li>
@@ -2154,7 +3465,14 @@ async function boot() {
     if (!me.onboarded) startOnboarding(false);
     else await openSchedule();
     loadFriends();
-    setInterval(() => { if (!state.ob && document.visibilityState === "visible") loadFriends(); }, FRIENDS_POLL);
+    loadClubs();
+    loadUnread();
+    setInterval(() => {
+      if (state.ob || document.visibilityState !== "visible") return;
+      loadFriends();
+      loadClubs();
+      loadUnread();
+    }, FRIENDS_POLL);
   } catch (e) {
     console.error(e);
     renderError(e, boot);

@@ -290,6 +290,44 @@ svg { display: block; }
 .segmented [role="tab"] { height: 40px; font-size: 14px; font-weight: 600; }
 #sched-body { margin-top: 20px; }
 
+/* the bell next to the schedule switch, in the same glass; the red badge counts what is new */
+.sched-top { display: flex; align-items: center; gap: 10px; }
+.sched-top .sched-switch { flex: 1; min-width: 0; }
+/* beside the bell there is less room: each tab is as wide as its name, so «Статистика» never spills out of its pill */
+.sched-switch [role="tab"] { flex: 1 1 auto; padding: 0 10px; white-space: nowrap; }
+.bell {
+  position: relative; flex: none; display: grid; place-items: center; width: 52px; height: 52px; border-radius: 50%;
+  border: 1px solid var(--st-border); background: var(--st-bg); color: var(--text);
+  box-shadow: var(--st-glow); /* taste-skill-ignore: matches the glass switch beside it */
+  -webkit-backdrop-filter: blur(20px) saturate(150%); /* taste-skill-ignore: matches the glass switch beside it */
+  backdrop-filter: blur(20px) saturate(150%); /* taste-skill-ignore: matches the glass switch beside it */
+  transition: transform 150ms var(--ease);
+}
+.bell:active { transform: scale(0.94); }
+.bell svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.bell-badge {
+  position: absolute; top: 2px; right: 0; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px;
+  display: grid; place-items: center; background: #ff3b30; color: #ffffff; border: 2px solid var(--ground);
+  font-size: 11px; font-weight: 700; line-height: 1;
+}
+.bell-badge[hidden] { display: none; }
+
+/* the notifications sheet */
+.ntf-list { list-style: none; margin-top: 10px; }
+.ntf {
+  display: flex; align-items: flex-start; gap: 12px; width: calc(100% + 16px); padding: 12px 8px; margin: 0 -8px; border-radius: 14px;
+  text-align: left; transition: background-color 150ms var(--ease);
+}
+.ntf:active { background: var(--press); }
+.ntf.unread { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.avatar.ntf-avatar { width: 40px; height: 40px; font-size: 14px; }
+.ntf-main { flex: 1; min-width: 0; }
+.ntf-text { display: block; font-size: 14px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
+.ntf-text b { color: var(--text); font-weight: 600; }
+.ntf-main time { display: block; margin-top: 2px; font-size: 12px; color: var(--faint); }
+.ntf-dot { flex: none; width: 9px; height: 9px; margin-top: 6px; border-radius: 50%; background: var(--accent); }
+.club-request-hint { margin-top: 8px; text-align: center; }
+
 /* ---------- week table: days down, pairs across ---------- */
 
 .wk-scroll { margin: 16px calc(-1 * var(--margin)) 0; padding: 0 12px; overflow-x: auto; }
@@ -427,6 +465,174 @@ svg { display: block; }
 .clubs-head h1 { font-size: var(--fs-title); font-weight: 600; }
 .clubs-sub { margin-top: 4px; font-size: 14px; color: var(--muted); max-width: 34ch; }
 
+/* a club's own face: a rounded square, so it never reads as a person */
+.avatar.club-avatar { border-radius: 30%; background: color-mix(in srgb, var(--c) 22%, var(--raised)); color: var(--c); }
+.person[data-club], .person[data-member] { cursor: pointer; transition: background-color 150ms var(--ease); }
+.person[data-club]:active, .person[data-member]:active { background: var(--press); }
+.row-go svg, .person-actions .row-go svg { width: 18px; height: 18px; fill: none; stroke: var(--faint); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.row-go { flex: none; display: grid; place-items: center; }
+.person-actions { align-items: center; }
+/* an invitation: its two buttons go under the club's name instead of squeezing it */
+.person.with-actions { flex-wrap: wrap; }
+.person.with-actions .person-actions { flex-basis: 100%; display: grid; grid-template-columns: 1fr 1fr; padding-left: 56px; }
+.role-tag { flex: none; padding: 3px 9px; border-radius: 999px; background: var(--raised); color: var(--muted); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.role-tag.owner { background: var(--primary-bg); color: var(--primary-ink); }
+.club-filter { display: flex; gap: 6px; margin: 10px calc(-1 * var(--margin)) 0; padding: 0 var(--margin); overflow-x: auto; scrollbar-width: none; }
+.club-filter::-webkit-scrollbar { display: none; }
+.club-filter button { flex: none; height: 34px; padding: 0 14px; border-radius: 999px; background: var(--surface); color: var(--muted); font-size: 14px; transition: transform 150ms var(--ease); }
+.club-filter button:active { transform: scale(0.96); }
+.club-filter button[aria-pressed="true"] { background: var(--primary-bg); color: var(--primary-ink); }
+#club-new-2 { margin-top: 16px; }
+
+.club-hero { display: flex; flex-direction: column; align-items: center; margin-top: 18px; text-align: center; }
+.avatar.club-avatar.big { width: 96px; height: 96px; font-size: 32px; }
+.club-hero h1 { margin-top: 14px; font-size: var(--fs-title); font-weight: 600; line-height: 1.25; text-wrap: balance; overflow-wrap: anywhere; }
+.club-hero p { margin-top: 4px; font-size: 14px; color: var(--muted); }
+.club-about { margin-top: 18px; padding: 16px 18px; border-radius: var(--radius-card); background: var(--surface); font-size: 15px; line-height: 1.55; white-space: pre-line; overflow-wrap: anywhere; }
+.club-action { margin-top: 16px; }
+.club-owner { margin-top: 14px; font-size: 13px; color: var(--faint); text-align: center; }
+.chat-btn { display: flex; align-items: center; justify-content: center; gap: 9px; }
+.chat-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
+.club-tools { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.club-tools .btn { height: 46px; font-size: 15px; }
+.club-exit-note { margin-top: 18px; }
+.invite-list { margin-bottom: 6px; }
+.club-switch { margin-top: 20px; }
+.clubs-switch { margin-top: 16px; }
+.clubs-switch + #clubs-body > .clubs-sub { margin-top: 12px; }
+.post-club { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 0; text-align: left; }
+.post-club .avatar.club-avatar { border-radius: 30%; }
+.post-club .post-who b { font-size: 15px; }
+.person-now.fresh { color: var(--accent); }
+
+/* a club's feed */
+.compose-btn { display: flex; align-items: center; justify-content: center; gap: 8px; height: 46px; margin-top: 14px; font-size: 15px; }
+.compose-btn svg, .post-tools svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.feed { display: grid; gap: 10px; margin-top: 14px; }
+.feed-empty { margin-top: 14px; }
+.post { padding: 14px 16px 16px; border-radius: var(--radius-card); background: var(--surface); }
+.post-head { display: flex; align-items: center; gap: 10px; }
+.avatar.post-avatar { width: 36px; height: 36px; font-size: 13px; }
+.post-who { flex: 1; min-width: 0; }
+.post-who b { display: block; font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.post-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0 8px; font-size: 12px; color: var(--faint); }
+.post-vis { display: inline-flex; align-items: center; gap: 3px; color: var(--accent); }
+.post-vis svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.feed-visitor { margin-top: 14px; }
+.post-del {
+  flex: none; display: grid; place-items: center; min-width: 32px; height: 32px; padding: 0 8px; border-radius: 999px;
+  color: var(--faint); font-size: 13px; font-weight: 600; transition: background-color 150ms var(--ease);
+}
+.post-del svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.post-del.sure { color: #e5484d; background: color-mix(in srgb, #e5484d 14%, transparent); }
+.post-body { margin-top: 10px; font-size: 15px; line-height: 1.55; white-space: pre-line; overflow-wrap: anywhere; }
+.post-body a { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.post-photo { display: block; width: 100%; margin-top: 12px; border-radius: var(--radius-small); overflow: hidden; background: var(--raised); }
+.post-photo img { display: block; width: 100%; height: auto; max-height: 520px; object-fit: contain; }
+#posts-more { margin-top: 8px; }
+.post-form .field-hint { margin-bottom: 2px; }
+.post-pick { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.post-pick img { width: 72px; height: 72px; border-radius: 12px; object-fit: cover; }
+.post-tools { margin-top: 12px; }
+.post-tools .btn-sm { display: inline-flex; align-items: center; gap: 6px; }
+.post-form .btn { margin-top: 14px; }
+/* reactions and comments */
+.post-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
+.reactions { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.reaction {
+  display: inline-flex; align-items: center; gap: 4px; height: 32px; padding: 0 10px; border-radius: 999px;
+  background: var(--raised); font-size: 15px; transition: transform 150ms var(--ease), background-color 150ms var(--ease);
+}
+.reaction b { font-size: 13px; font-weight: 600; color: var(--muted); }
+.reaction.mine { background: color-mix(in srgb, var(--accent) 24%, var(--raised)); box-shadow: inset 0 0 0 1.5px var(--accent); } /* taste-skill-ignore: your own reaction */
+.reaction.mine b { color: var(--text); }
+.reaction:active { transform: scale(0.94); }
+.reaction.add { width: 32px; padding: 0; justify-content: center; color: var(--faint); }
+.reaction.add svg, .comments-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.reaction.pop { animation: pop 380ms cubic-bezier(0.2, 1.6, 0.3, 1); }
+@keyframes pop { from { transform: scale(0.7); } }
+.react-picker { display: flex; justify-content: space-between; gap: 4px; margin-top: 10px; padding: 6px; border-radius: 999px; background: var(--raised); }
+.react-picker[hidden] { display: none; }
+.react-picker button { width: 40px; height: 40px; border-radius: 50%; font-size: 22px; transition: transform 150ms var(--ease); }
+.react-picker button:active { transform: scale(1.25); }
+.comments-btn {
+  flex: none; display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 999px;
+  background: var(--raised); color: var(--muted); font-size: 13px; font-weight: 600;
+}
+.comments-btn b { color: var(--text); }
+.comments-off { flex: none; font-size: 12px; color: var(--faint); }
+.post-options { margin-top: 12px; }
+.comments { display: grid; gap: 14px; margin-top: 16px; }
+.comment { display: flex; align-items: flex-start; gap: 10px; }
+.avatar.comment-avatar { width: 32px; height: 32px; font-size: 12px; }
+.comment-main { flex: 1; min-width: 0; }
+.comment-who { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
+.comment-who b { font-size: 14px; font-weight: 600; }
+.comment-who .group-tag { padding: 0 6px; font-size: 11px; }
+.comment-who time { font-size: 12px; color: var(--faint); }
+.comment-body { margin-top: 2px; font-size: 15px; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; }
+.comment-body a { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+/* the field stays at the bottom of the sheet and paints over the sheet's bottom padding, so nothing scrolls under it */
+.comment-form {
+  position: sticky; bottom: 0; display: flex; align-items: flex-end; gap: 8px;
+  margin: 16px calc(-1 * var(--margin)) 0; padding: 10px var(--margin) 0;
+  background: var(--ground); border-top: 1px solid var(--rule);
+  box-shadow: 0 calc(22px + var(--bottom-inset)) 0 var(--ground); /* taste-skill-ignore: fills the strip under a sticky field */
+}
+.comment-form textarea {
+  flex: 1; min-height: 44px; max-height: 120px; padding: 11px 16px; border: 0; border-radius: 22px;
+  background: var(--surface); color: var(--text); font: inherit; font-size: 16px; line-height: 1.4; resize: none;
+  box-shadow: inset 0 0 0 1px var(--dash); /* taste-skill-ignore: a field border drawn inside */
+}
+.comment-form textarea:focus { box-shadow: inset 0 0 0 2px var(--accent); } /* taste-skill-ignore: focus ring */
+.comment-form textarea::placeholder { color: var(--faint); }
+.comment-send { flex: none; display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: var(--primary-bg); color: var(--primary-ink); }
+.comment-send svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.comment-send:disabled { opacity: 0.5; }
+
+/* a group's own colour: the same bright tag next to everyone from that group */
+.group-tag {
+  flex: none; display: inline-block; padding: 1px 7px; border-radius: 6px;
+  background: hsl(var(--gh) 80% 72%); color: hsl(var(--gh) 60% 16%);
+  background: oklch(0.83 0.14 var(--gh)); color: oklch(0.28 0.08 var(--gh));
+  font-size: 12px; font-weight: 700; line-height: 1.5; letter-spacing: 0.01em; white-space: nowrap;
+}
+.person-name { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0; }
+.person-name b { min-width: 0; max-width: 100%; }
+.profile-name { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.profile-name .group-tag { padding: 2px 8px; font-size: 13px; }
+
+.photo-view {
+  position: fixed; inset: 0; z-index: 60; display: grid; place-items: center;
+  padding: calc(var(--top-inset) + 16px) 12px calc(var(--bottom-inset) + 16px);
+  background: rgba(0, 0, 0, 0.92); animation: fade-in 160ms var(--ease) both;
+}
+.photo-view img { max-width: 100%; max-height: 100%; border-radius: 8px; object-fit: contain; }
+
+.club-form .field { margin-top: 22px; }
+.field .label { display: block; margin-bottom: 8px; font-size: 14px; font-weight: 500; }
+.field textarea {
+  display: block; width: 100%; min-height: 112px; padding: 14px 18px; border: 0; border-radius: var(--radius-small);
+  background: var(--surface); color: var(--text); font: inherit; font-size: 16px; line-height: 1.45; resize: vertical;
+  box-shadow: inset 0 0 0 1px var(--dash); transition: box-shadow 150ms var(--ease); /* taste-skill-ignore: a field border drawn inside */
+}
+.field textarea:focus { box-shadow: inset 0 0 0 2px var(--accent); } /* taste-skill-ignore: focus ring */
+.field textarea::placeholder { color: var(--faint); }
+.field-hint { margin-top: 6px; font-size: 13px; line-height: 1.45; color: var(--faint); }
+.cat-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.cat-chips button {
+  display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 14px; border-radius: 999px;
+  background: var(--surface); color: var(--muted); font-size: 14px; transition: transform 150ms var(--ease);
+}
+.cat-chips button::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.cat-chips button:active { transform: scale(0.96); }
+.cat-chips button[aria-checked="true"] { background: var(--primary-bg); color: var(--primary-ink); }
+.club-form .options { margin-top: 0; }
+.club-form .options button { padding: 12px 18px; }
+.club-photo { display: flex; align-items: center; gap: 16px; margin-top: 18px; }
+.club-photo-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.club-submit { margin-top: 26px; }
+
 /* ---------- profile ---------- */
 
 .profile-head { display: flex; align-items: center; gap: 16px; margin-top: 26px; }
@@ -464,6 +670,19 @@ svg { display: block; }
 .nick-form { margin-top: 18px; }
 .nick-form .btn { margin-top: 14px; }
 .profile-head p { margin-top: 2px; font-size: 14px; color: var(--muted); }
+.profile-bio {
+  display: block; width: 100%; margin-top: 18px; padding: 14px 16px; border-radius: var(--radius-small);
+  background: var(--surface); font-size: 15px; line-height: 1.5; text-align: left; white-space: pre-line; overflow-wrap: anywhere;
+  transition: background-color 150ms var(--ease);
+}
+.profile-bio:active { background: var(--press); }
+.profile-bio.empty { background: none; border: 1px dashed var(--dash); color: var(--faint); font-size: 14px; }
+.person-bio {
+  margin-top: 14px; padding: 12px 14px; border-radius: var(--radius-small); background: var(--surface);
+  font-size: 15px; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere;
+}
+.member-rel { display: flex; align-items: center; justify-content: center; gap: 6px; height: 44px; font-size: 15px; color: var(--muted); }
+.member-rel svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 /* friends */
 .friend-search { display: flex; gap: 8px; margin-top: 18px; }
 .friend-search input {
@@ -487,6 +706,15 @@ svg { display: block; }
 .person .avatar { width: 44px; height: 44px; font-size: 15px; }
 .person-text { flex: 1; min-width: 0; }
 .person-text b { display: block; font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* the club a friend chose to show: a small tag in its category's colour */
+.club-pill {
+  max-width: 100%; display: inline-block; padding: 2px 8px 2px 7px; border-radius: 999px;
+  background: color-mix(in srgb, var(--c) 16%, var(--raised)); color: var(--text);
+  font-size: 12px; font-weight: 500; line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.club-pill::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: var(--c); vertical-align: 1px; }
+.person-club, .sheet-head .sheet-club { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 4px; }
+.club-more { font-size: 12px; font-weight: 600; color: var(--faint); }
 .person-text span { display: block; margin-top: 2px; font-size: 13px; color: var(--muted); line-height: 1.35; }
 .person-now { display: block; margin-top: 3px; font-style: normal; color: var(--text); }
 .person > svg { flex: none; width: 18px; height: 18px; fill: none; stroke: var(--faint); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }

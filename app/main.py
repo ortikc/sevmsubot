@@ -1,9 +1,11 @@
 """HTTP API + static Mini App."""
 import asyncio
+import base64
 import hashlib
 import html
 import logging
 import os
+import re
 import secrets
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta, timezone
@@ -22,6 +24,7 @@ from pydantic import BaseModel, Field
 from . import db, scraper
 from .auth import AuthError, validate_init_data
 from .bot import Bot
+from .profanity import has_profanity
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
@@ -33,6 +36,7 @@ AVATARS.mkdir(parents=True, exist_ok=True)
 AVATAR_SIZE = 256
 AVATAR_MAX_BYTES = 8 * 1024 * 1024
 NICK_MAX = 32
+BIO_MAX = 200
 Image.MAX_IMAGE_PIXELS = 50_000_000
 FULL_SYNC_EVERY = timedelta(hours=6)
 GROUP_STALE_AFTER = timedelta(hours=2)
@@ -199,6 +203,7 @@ def _remember_open_button(chat_id: int, message_id: int):
 async def lifespan(_app):
     global bot
     db.init()
+    _close_profane_open_posts()
     tasks = [asyncio.create_task(full_sync_loop()), asyncio.create_task(reminder_loop())]
     if BOT_TOKEN:
         bot = Bot(BOT_TOKEN, os.getenv("WEBAPP_URL", ""), ROOT / "data" / "webapp_url.txt")
@@ -290,6 +295,7 @@ def _profile(conn, user):
         "custom_avatar": bool(user["avatar"]),
         "real_name": user["real_name"],
         "nickname": user["nickname"],
+        "bio": user["bio"],
         "group": group,
         "onboarded": bool(user["real_name"] and group),
     }
@@ -357,6 +363,21 @@ def save_nickname(body: NicknameIn, user=Depends(current_user)):
         return _profile(conn, user)
 
 
+class BioIn(BaseModel):
+    bio: str = Field(max_length=1000)
+
+
+@app.post("/api/profile/bio")
+def save_bio(body: BioIn, user=Depends(current_user)):
+    """A few words about yourself; empty removes them."""
+    bio = _clean_about(body.bio)
+    if len(bio) > BIO_MAX:
+        raise HTTPException(400, f"Описание: не длиннее {BIO_MAX} символов")
+    with db.session() as conn:
+        conn.execute("UPDATE users SET bio=?, updated_at=datetime('now') WHERE tg_id=?", (bio or None, user["tg_id"]))
+        return _profile(conn, dict(conn.execute("SELECT * FROM users WHERE tg_id=?", (user["tg_id"],)).fetchone()))
+
+
 def _encode_avatar(raw: bytes) -> bytes:
     """Whatever was sent becomes a square JPEG without metadata, or fails if it is not a picture."""
     img = ImageOps.exif_transpose(Image.open(BytesIO(raw))).convert("RGB")
@@ -373,9 +394,8 @@ def _set_avatar(conn, user, token):
     return _profile(conn, dict(conn.execute("SELECT * FROM users WHERE tg_id=?", (user["tg_id"],)).fetchone()))
 
 
-@app.post("/api/profile/avatar")
-async def upload_avatar(request: Request, user=Depends(current_user)):
-    """A photo of your own instead of the Telegram one; the body is the image itself."""
+async def _save_photo(request: Request) -> str:
+    """The request body (an image) stored as a square JPEG; returns its file name without extension."""
     if int(request.headers.get("content-length") or 0) > AVATAR_MAX_BYTES:
         raise HTTPException(413, "Фото слишком большое")
     raw = await request.body()
@@ -387,6 +407,13 @@ async def upload_avatar(request: Request, user=Depends(current_user)):
         raise HTTPException(400, "Это не похоже на фото")
     token = secrets.token_urlsafe(12)   # a fresh name on every change, so no cache shows the old photo
     (AVATARS / f"{token}.jpg").write_bytes(jpeg)
+    return token
+
+
+@app.post("/api/profile/avatar")
+async def upload_avatar(request: Request, user=Depends(current_user)):
+    """A photo of your own instead of the Telegram one; the body is the image itself."""
+    token = await _save_photo(request)
     with db.session() as conn:
         return _set_avatar(conn, user, token)
 
@@ -492,6 +519,7 @@ class SettingsIn(BaseModel):
     remind_all: bool | None = None
     remind_lead: int | None = None
     digest_time: str | None = None  # "HH:MM" from DIGEST_TIMES, or "off"
+    show_club: bool | None = None
 
 
 def _calendar_url(conn, user) -> str:
@@ -509,6 +537,7 @@ def _settings(conn, user):
         "remind_all": bool(user["remind_all"]),
         "remind_lead": user["remind_lead"],
         "digest_time": user["digest_time"],
+        "show_club": bool(user["show_club"]),
         "calendar_url": _calendar_url(conn, user),
         "leads": list(LEADS),
         "digest_times": list(DIGEST_TIMES),
@@ -546,6 +575,8 @@ def save_settings(body: SettingsIn, user=Depends(current_user)):
                              (body.digest_time, sent_on, user["tg_id"]))
             else:
                 raise HTTPException(400, "Такого времени нет в списке")
+        if body.show_club is not None:
+            conn.execute("UPDATE users SET show_club=? WHERE tg_id=?", (int(body.show_club), user["tg_id"]))
         return _settings(conn, user)
 
 
@@ -621,6 +652,62 @@ def calendar(token: str):
                     headers={"Content-Disposition": 'inline; filename="raspisanie.ics"', "Cache-Control": "no-cache"})
 
 
+# ---------- notifications: what happened to you, for the bell on the main screen ----------
+
+NOTIFY_KEEP = 100   # the newest per student; older ones are dropped
+
+
+def _preview(text: str) -> str:
+    line = " ".join((text or "").split())
+    return line if len(line) <= 90 else f"{line[:89]}…"
+
+
+def _notify(conn, to: int, kind: str, actor: int | None = None, club_id: int | None = None,
+            post_id: int | None = None, text: str = ""):
+    """One line in someone's notifications; nobody is told about their own doing."""
+    if to == actor:
+        return
+    conn.execute("INSERT INTO notifications(tg_id, kind, actor, club_id, post_id, text) VALUES(?, ?, ?, ?, ?, ?)",
+                 (to, kind, actor, club_id, post_id, _preview(text)))
+    conn.execute("DELETE FROM notifications WHERE tg_id=? AND id <= (SELECT id FROM notifications WHERE tg_id=? "
+                 "ORDER BY id DESC LIMIT 1 OFFSET ?)", (to, to, NOTIFY_KEEP))
+
+
+def _unread(conn, me: int) -> int:
+    return conn.execute("SELECT COUNT(*) FROM notifications WHERE tg_id=? AND read_at IS NULL", (me,)).fetchone()[0]
+
+
+@app.get("/api/notifications")
+def notifications(user=Depends(current_user)):
+    """The newest 50, each with who did it and in which club."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        items = []
+        for r in conn.execute("SELECT * FROM notifications WHERE tg_id=? ORDER BY id DESC LIMIT 50", (me,)).fetchall():
+            actor = _card(conn, r["actor"]) if r["actor"] else None
+            club = conn.execute("SELECT * FROM clubs WHERE id=?", (r["club_id"],)).fetchone() if r["club_id"] else None
+            items.append({"id": r["id"], "kind": r["kind"], "text": r["text"], "created_at": r["created_at"],
+                          "read": bool(r["read_at"]), "post_id": r["post_id"],
+                          "actor": {"tg_id": actor["tg_id"], "name": actor["name"], "photo_url": actor["photo_url"]} if actor else None,
+                          "club": {"id": club["id"], "name": club["name"], "category": club["category"],
+                                   "photo_url": f"/avatars/{club['avatar']}.jpg" if club["avatar"] else ""} if club else None})
+        return {"items": items, "unread": _unread(conn, me)}
+
+
+@app.get("/api/notifications/unread")
+def notifications_unread(user=Depends(current_user)):
+    """Just the number for the red badge on the bell."""
+    with db.session() as conn:
+        return {"unread": _unread(conn, user["tg_id"])}
+
+
+@app.post("/api/notifications/read")
+def notifications_read(user=Depends(current_user)):
+    with db.session() as conn:
+        conn.execute("UPDATE notifications SET read_at=datetime('now') WHERE tg_id=? AND read_at IS NULL", (user["tg_id"],))
+    return {"unread": 0}
+
+
 # ---------- friends ----------
 # Found by exact Telegram @username only (no partial search, so nobody can list everyone);
 # a friend's schedule is visible only when the friendship is mutual.
@@ -655,12 +742,21 @@ def _card(conn, tg_id: int, with_now: bool = False):
         "WHERE u.tg_id=?", (tg_id,)).fetchone()
     if not u:
         return None
-    card = {"tg_id": u["tg_id"], "name": _display_name(u), "photo_url": _photo(u),
+    card = {"tg_id": u["tg_id"], "name": _display_name(u), "photo_url": _photo(u), "bio": u["bio"] or "",
             "group": u["group_name"], "course": u["group_course"],
             "faculty": u["faculty"], "is_master": bool(u["is_master"])}
     if with_now:
         card["now"] = _now_status(conn, u["group_id"], datetime.now(timezone.utc))
     return card
+
+
+def _shown_clubs(conn, tg_id: int):
+    """The clubs a friend chose to show to friends (a setting of theirs, off by default); their own first."""
+    rows = conn.execute(
+        "SELECT c.id, c.name, c.category FROM users u JOIN club_members m ON m.tg_id = u.tg_id "
+        "JOIN clubs c ON c.id = m.club_id WHERE u.tg_id=? AND u.show_club=1 "
+        "ORDER BY m.role = 'owner' DESC, m.joined_at", (tg_id,)).fetchall()
+    return [dict(r) for r in rows]
 
 
 def _flame(conn, me: int, other: int, today: date | None = None):
@@ -708,6 +804,7 @@ def friends(user=Depends(current_user)):
         friend_cards = cards(mutual, True)
         for c in friend_cards:
             c["flame"] = _flame(conn, me, c["tg_id"])
+            c["clubs"] = _shown_clubs(conn, c["tg_id"])
         return {"friends": friend_cards, "incoming": cards(incoming), "outgoing": cards(outgoing)}
 
 
@@ -737,8 +834,10 @@ def add_friend(other: int, user=Depends(current_user)):
             raise HTTPException(400, "Это вы")
         if rel == "incoming":
             conn.execute("UPDATE friendships SET status='accepted' WHERE requester=? AND addressee=?", (other, me))
+            _notify(conn, other, "friend_accept", me)
         elif rel == "none":
             conn.execute("INSERT INTO friendships(requester, addressee) VALUES(?, ?)", (me, other))
+            _notify(conn, other, "friend_request", me)
         return {"relation": _relation(conn, me, other)}
 
 
@@ -750,6 +849,7 @@ def accept_friend(other: int, user=Depends(current_user)):
                          (other, me)).rowcount
         if not n:
             raise HTTPException(404, "Заявки уже нет")
+        _notify(conn, other, "friend_accept", me)
         return {"relation": "friend"}
 
 
@@ -772,8 +872,12 @@ def press_flame(other: int, user=Depends(current_user)):
     with db.session() as conn:
         if _relation(conn, me, other) != "friend":
             raise HTTPException(403, "Огонёк есть только у друзей")
-        conn.execute("INSERT OR IGNORE INTO flame_taps(tapper, friend, day) VALUES(?, ?, ?)",
-                     (me, other, datetime.now(MSK).date().isoformat()))
+        today = datetime.now(MSK).date().isoformat()
+        pressed = conn.execute("INSERT OR IGNORE INTO flame_taps(tapper, friend, day) VALUES(?, ?, ?)",
+                               (me, other, today)).rowcount
+        if pressed and not conn.execute("SELECT 1 FROM flame_taps WHERE tapper=? AND friend=? AND day=?",
+                                        (other, me, today)).fetchone():
+            _notify(conn, other, "flame", me)   # their turn to keep the streak
         return _flame(conn, me, other)
 
 
@@ -786,6 +890,699 @@ async def friend_schedule(other: int, start: date, end: date, user=Depends(curre
     if not friend or not friend["group_id"]:
         raise HTTPException(404, "У друга не выбрана группа")
     return await _group_schedule(friend["group_id"], start, end)
+
+
+# ---------- clubs ----------
+# Anyone can found a club; a student may be in any number of clubs but owns at most CLUB_OWN_MAX.
+# Roles: owner (one per club; the only one who appoints admins, hands the club over or deletes it),
+# admin (sets the club up, invites, removes ordinary members, posts to the feed), member.
+# Visibility: public (anyone sees and joins), friends (the owner's friends see and join),
+# closed (anyone sees it and asks to join; the owner or an admin decides), invite (only by invitation).
+# Every club has a feed that only its members read; the owner and admins post to it.
+
+CLUB_CATEGORIES = ("science", "it", "sport", "art", "music", "games", "language", "volunteer", "other")
+CLUB_VISIBILITY = ("public", "friends", "closed", "invite")
+CLUB_NAME_MAX = 48
+CLUB_ABOUT_MAX = 600
+CLUB_OWN_MAX = 3
+CHAT_LINK = re.compile(r"(?:https?://)?(?:t\.me|telegram\.me)/([A-Za-z0-9_+/=-]{2,96})")
+CHAT_HANDLE = re.compile(r"@([A-Za-z0-9_]{4,32})")
+ROLE_ORDER = {"owner": 0, "admin": 1, "member": 2}
+POST_MAX = 2000
+POST_PHOTO_SIDE = 1280
+POSTS_PAGE = 20
+REACTIONS = ("👍", "❤️", "😂", "😮", "😢", "🔥")
+COMMENT_MAX = 1000
+POSTS = ROOT / "data" / "posts"   # feed photos, named by a random token that only the club's members are given
+POSTS.mkdir(parents=True, exist_ok=True)
+
+
+def _clean_line(text: str) -> str:
+    return " ".join("".join(ch for ch in text if ch.isprintable()).split())
+
+
+def _clean_about(text: str) -> str:
+    """Keeps the paragraphs, drops control characters and runs of empty lines."""
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(_clean_line(line) for line in text.splitlines())).strip()
+
+
+def _chat_url(raw: str) -> str | None:
+    """A Telegram chat as typed (t.me/..., https://t.me/+..., @name) becomes https://t.me/...; empty clears it."""
+    raw = raw.strip()
+    if not raw:
+        return None
+    m = CHAT_LINK.fullmatch(raw) or CHAT_HANDLE.fullmatch(raw)
+    if not m:
+        raise HTTPException(400, "Ссылка на чат должна вести в Telegram: t.me/… или @название")
+    return f"https://t.me/{m.group(1)}"
+
+
+def _member_role(conn, club_id: int, tg_id: int) -> str | None:
+    row = conn.execute("SELECT role FROM club_members WHERE club_id=? AND tg_id=?", (club_id, tg_id)).fetchone()
+    return row["role"] if row else None
+
+
+def _owned(conn, tg_id: int) -> int:
+    return conn.execute("SELECT COUNT(*) FROM club_members WHERE tg_id=? AND role='owner'", (tg_id,)).fetchone()[0]
+
+
+def _club_row(conn, club_id: int):
+    club = conn.execute("SELECT * FROM clubs WHERE id=?", (club_id,)).fetchone()
+    if not club:
+        raise HTTPException(404, "Такого клуба нет")
+    return club
+
+
+def _club_owner(conn, club_id: int) -> int:
+    return conn.execute("SELECT tg_id FROM club_members WHERE club_id=? AND role='owner'", (club_id,)).fetchone()["tg_id"]
+
+
+def _club_size(conn, club_id: int) -> int:
+    return conn.execute("SELECT COUNT(*) FROM club_members WHERE club_id=?", (club_id,)).fetchone()[0]
+
+
+def _invited(conn, club_id: int, tg_id: int) -> bool:
+    return bool(conn.execute("SELECT 1 FROM club_invites WHERE club_id=? AND invitee=?", (club_id, tg_id)).fetchone())
+
+
+def _open_to(conn, club, me: int) -> bool:
+    """Whether the student may see and join the club without an invitation."""
+    if club["visibility"] == "public":
+        return True
+    return club["visibility"] == "friends" and _relation(conn, me, _club_owner(conn, club["id"])) == "friend"
+
+
+def _club_card(conn, club):
+    return {"id": club["id"], "name": club["name"], "about": club["about"], "category": club["category"],
+            "visibility": club["visibility"], "photo_url": f"/avatars/{club['avatar']}.jpg" if club["avatar"] else "",
+            "members": _club_size(conn, club["id"])}
+
+
+def _can_view(conn, club, me: int, role: str | None) -> bool:
+    """Members, the invited, whoever may join it freely, and anyone at all for a club that takes requests."""
+    return bool(role) or club["visibility"] == "closed" or _invited(conn, club["id"], me) or _open_to(conn, club, me)
+
+
+def _club_view(conn, club, me: int):
+    """The club as this student sees it. Whoever may open it sees its members;
+    the chat, writing to members and the invitations stay with the members."""
+    role = _member_role(conn, club["id"], me)
+    invited = _invited(conn, club["id"], me)
+    if not _can_view(conn, club, me, role):
+        raise HTTPException(404, "Такого клуба нет")
+    owner = _card(conn, _club_owner(conn, club["id"]))
+    can_join = not role and (invited or _open_to(conn, club, me))
+    view = {**_club_card(conn, club), "role": role, "invited": invited, "owner": owner["name"] if owner else "",
+            "can_join": can_join, "can_request": not role and not can_join and club["visibility"] == "closed",
+            "requested": bool(conn.execute("SELECT 1 FROM club_requests WHERE club_id=? AND tg_id=?", (club["id"], me)).fetchone())}
+    rows = conn.execute("SELECT m.tg_id, m.role, u.username FROM club_members m JOIN users u ON u.tg_id = m.tg_id "
+                        "WHERE m.club_id=? ORDER BY m.joined_at", (club["id"],))
+    members = [{**c, "role": r["role"], "can_dm": bool(role and r["username"]),
+                "relation": "self" if r["tg_id"] == me else _relation(conn, me, r["tg_id"])}
+               for r in rows if (c := _card(conn, r["tg_id"]))]
+    view["member_list"] = sorted(members, key=lambda m: ROLE_ORDER[m["role"]])
+    if role:
+        view["chat_url"] = club["chat_url"]
+    if role in ("owner", "admin"):
+        invites = conn.execute("SELECT invitee FROM club_invites WHERE club_id=? ORDER BY created_at", (club["id"],))
+        view["invites"] = [c for r in invites if (c := _card(conn, r["invitee"]))]
+        requests = conn.execute("SELECT tg_id FROM club_requests WHERE club_id=? ORDER BY created_at", (club["id"],))
+        view["requests"] = [c for r in requests if (c := _card(conn, r["tg_id"]))]
+    return view
+
+
+def _require_role(conn, club_id: int, me: int, *roles: str) -> str:
+    role = _member_role(conn, club_id, me)
+    if role not in roles:
+        raise HTTPException(403, "Это может только владелец клуба" if roles == ("owner",)
+                            else "Это могут только владелец и админы клуба" if "member" not in roles
+                            else "Вы не состоите в этом клубе")
+    return role
+
+
+def _club_member(conn, club_id: int, other: int) -> str:
+    role = _member_role(conn, club_id, other)
+    if not role:
+        raise HTTPException(404, "Этот человек не состоит в клубе")
+    return role
+
+
+class ClubIn(BaseModel):
+    name: str | None = Field(None, max_length=200)
+    about: str | None = Field(None, max_length=3000)
+    category: str | None = None
+    visibility: str | None = None
+    chat_url: str | None = Field(None, max_length=300)
+
+
+def _club_fields(conn, body: ClubIn, club_id: int | None = None) -> dict:
+    """The checked columns to write; only the fields that were sent."""
+    fields = {}
+    if body.name is not None:
+        name = _clean_line(body.name)
+        if not 2 <= len(name) <= CLUB_NAME_MAX:
+            raise HTTPException(400, f"Название: от 2 до {CLUB_NAME_MAX} символов")
+        # SQLite's lower() only knows ASCII, so names are compared here, Cyrillic included
+        if any(r["name"].casefold() == name.casefold() and r["id"] != club_id for r in conn.execute("SELECT id, name FROM clubs")):
+            raise HTTPException(409, "Клуб с таким названием уже есть")
+        fields["name"] = name
+    if body.about is not None:
+        about = _clean_about(body.about)
+        if len(about) > CLUB_ABOUT_MAX:
+            raise HTTPException(400, f"Описание: не длиннее {CLUB_ABOUT_MAX} символов")
+        fields["about"] = about
+    if body.category is not None:
+        if body.category not in CLUB_CATEGORIES:
+            raise HTTPException(400, "Такой направленности нет")
+        fields["category"] = body.category
+    if body.visibility is not None:
+        if body.visibility not in CLUB_VISIBILITY:
+            raise HTTPException(400, "Выберите, кто может вступить")
+        fields["visibility"] = body.visibility
+    if body.chat_url is not None:
+        fields["chat_url"] = _chat_url(body.chat_url)
+    return fields
+
+
+@app.get("/api/clubs")
+def clubs(user=Depends(current_user)):
+    """Your clubs, the invitations waiting for you, and the clubs you may join."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        rows = conn.execute(
+            "SELECT c.*, m.role, (SELECT MAX(id) FROM club_posts p WHERE p.club_id = c.id) AS last_post "
+            "FROM club_members m JOIN clubs c ON c.id = m.club_id WHERE m.tg_id=? "
+            "ORDER BY m.role = 'owner' DESC, m.role = 'admin' DESC, m.joined_at", (me,)).fetchall()
+        my = [{**_club_card(conn, c), "role": c["role"], "last_post": c["last_post"] or 0,
+               "requests": conn.execute("SELECT COUNT(*) FROM club_requests WHERE club_id=?", (c["id"],)).fetchone()[0]
+               if c["role"] in ("owner", "admin") else 0} for c in rows]
+        mine = {c["id"] for c in my}
+        invites, invited = [], set()
+        for r in conn.execute("SELECT club_id, inviter FROM club_invites WHERE invitee=? ORDER BY created_at DESC", (me,)).fetchall():
+            club = conn.execute("SELECT * FROM clubs WHERE id=?", (r["club_id"],)).fetchone()
+            if club and club["id"] not in mine:
+                inviter = _card(conn, r["inviter"])
+                invites.append({**_club_card(conn, club), "inviter": inviter["name"] if inviter else ""})
+                invited.add(club["id"])
+        discover = [_club_card(conn, c) for c in conn.execute("SELECT * FROM clubs WHERE visibility != 'invite'").fetchall()
+                    if c["id"] not in mine and c["id"] not in invited and _can_view(conn, c, me, None)]
+        discover.sort(key=lambda c: (-c["members"], c["name"].casefold()))
+        return {"my": my, "invites": invites, "discover": discover,
+                "owned": sum(c["role"] == "owner" for c in my), "own_max": CLUB_OWN_MAX}
+
+
+@app.get("/api/clubs/{club_id}")
+def club(club_id: int, user=Depends(current_user)):
+    with db.session() as conn:
+        return _club_view(conn, _club_row(conn, club_id), user["tg_id"])
+
+
+@app.post("/api/clubs")
+def create_club(body: ClubIn, user=Depends(current_user)):
+    """Found a club and become its owner; a student owns at most CLUB_OWN_MAX clubs."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        if _owned(conn, me) >= CLUB_OWN_MAX:
+            raise HTTPException(409, f"Своих клубов может быть не больше {CLUB_OWN_MAX}. Чтобы создать новый, "
+                                     "передайте один из своих клубов другому участнику или удалите его.")
+        if not body.name:
+            raise HTTPException(400, "Придумайте название клуба")
+        fields = {"category": "other", "visibility": "public", **_club_fields(conn, body)}
+        cur = conn.execute(f"INSERT INTO clubs({', '.join(fields)}) VALUES({', '.join('?' * len(fields))})",
+                           tuple(fields.values()))
+        conn.execute("INSERT INTO club_members(club_id, tg_id, role) VALUES(?, ?, 'owner')", (cur.lastrowid, me))
+        return _club_view(conn, _club_row(conn, cur.lastrowid), me)
+
+
+@app.post("/api/clubs/{club_id}/settings")
+def club_settings(club_id: int, body: ClubIn, user=Depends(current_user)):
+    me = user["tg_id"]
+    with db.session() as conn:
+        _club_row(conn, club_id)
+        _require_role(conn, club_id, me, "owner", "admin")
+        fields = _club_fields(conn, body, club_id)
+        if fields:
+            conn.execute(f"UPDATE clubs SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?", (*fields.values(), club_id))
+        return _club_view(conn, _club_row(conn, club_id), me)
+
+
+def _set_club_avatar(club_id: int, me: int, token: str | None):
+    with db.session() as conn:
+        old = _club_row(conn, club_id)["avatar"]
+        conn.execute("UPDATE clubs SET avatar=? WHERE id=?", (token, club_id))
+        if old:
+            (AVATARS / f"{old}.jpg").unlink(missing_ok=True)
+        return _club_view(conn, _club_row(conn, club_id), me)
+
+
+@app.post("/api/clubs/{club_id}/avatar")
+async def club_avatar(club_id: int, request: Request, user=Depends(current_user)):
+    with db.session() as conn:
+        _club_row(conn, club_id)
+        _require_role(conn, club_id, user["tg_id"], "owner", "admin")
+    return _set_club_avatar(club_id, user["tg_id"], await _save_photo(request))
+
+
+@app.delete("/api/clubs/{club_id}/avatar")
+def remove_club_avatar(club_id: int, user=Depends(current_user)):
+    with db.session() as conn:
+        _club_row(conn, club_id)
+        _require_role(conn, club_id, user["tg_id"], "owner", "admin")
+    return _set_club_avatar(club_id, user["tg_id"], None)
+
+
+@app.post("/api/clubs/{club_id}/join")
+def join_club(club_id: int, user=Depends(current_user)):
+    """Join an open club, or accept an invitation."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        club = _club_row(conn, club_id)
+        if not _member_role(conn, club_id, me):
+            if not (_invited(conn, club_id, me) or _open_to(conn, club, me)):
+                raise HTTPException(403, "В этот клуб вступают только друзья владельца" if club["visibility"] == "friends"
+                                    else "В этот клуб вступают по заявке" if club["visibility"] == "closed"
+                                    else "В этот клуб вступают только по приглашению")
+            conn.execute("INSERT INTO club_members(club_id, tg_id, role) VALUES(?, ?, 'member')", (club_id, me))
+            conn.execute("DELETE FROM club_invites WHERE club_id=? AND invitee=?", (club_id, me))
+            conn.execute("DELETE FROM club_requests WHERE club_id=? AND tg_id=?", (club_id, me))
+        return _club_view(conn, club, me)
+
+
+@app.post("/api/clubs/{club_id}/leave")
+def leave_club(club_id: int, user=Depends(current_user)):
+    me = user["tg_id"]
+    with db.session() as conn:
+        _club_row(conn, club_id)
+        if _require_role(conn, club_id, me, "owner", "admin", "member") == "owner":
+            raise HTTPException(400, "Сначала передайте права владельца другому участнику" if _club_size(conn, club_id) > 1
+                                else "Вы единственный участник: клуб можно только удалить")
+        conn.execute("DELETE FROM club_members WHERE club_id=? AND tg_id=?", (club_id, me))
+    return {"left": True}
+
+
+@app.delete("/api/clubs/{club_id}")
+def delete_club(club_id: int, user=Depends(current_user)):
+    """Only the owner, and only once nobody else is left: a club with members is handed over, not deleted."""
+    with db.session() as conn:
+        club = _club_row(conn, club_id)
+        _require_role(conn, club_id, user["tg_id"], "owner")
+        if _club_size(conn, club_id) > 1:
+            raise HTTPException(400, "В клубе есть участники, поэтому удалить его нельзя. "
+                                     "Можно передать права владельца другому участнику.")
+        photos = [r["photo"] for r in conn.execute("SELECT photo FROM club_posts WHERE club_id=? AND photo IS NOT NULL", (club_id,))]
+        for r in conn.execute("SELECT id FROM club_posts WHERE club_id=?", (club_id,)).fetchall():
+            _drop_post(conn, r["id"])
+        conn.execute("DELETE FROM club_invites WHERE club_id=?", (club_id,))
+        conn.execute("DELETE FROM club_requests WHERE club_id=?", (club_id,))
+        conn.execute("DELETE FROM notifications WHERE club_id=?", (club_id,))
+        conn.execute("DELETE FROM club_members WHERE club_id=?", (club_id,))
+        conn.execute("DELETE FROM clubs WHERE id=?", (club_id,))
+    for token in photos:
+        (POSTS / f"{token}.jpg").unlink(missing_ok=True)
+    if club["avatar"]:
+        (AVATARS / f"{club['avatar']}.jpg").unlink(missing_ok=True)
+    return {"deleted": True}
+
+
+@app.post("/api/clubs/{club_id}/invites/{other}")
+def invite_to_club(club_id: int, other: int, user=Depends(current_user)):
+    me = user["tg_id"]
+    with db.session() as conn:
+        _club_row(conn, club_id)
+        _require_role(conn, club_id, me, "owner", "admin")
+        if not conn.execute("SELECT 1 FROM users WHERE tg_id=? AND real_name IS NOT NULL AND group_id IS NOT NULL",
+                            (other,)).fetchone():
+            raise HTTPException(404, "Такого студента нет в приложении")
+        if _member_role(conn, club_id, other):
+            raise HTTPException(409, "Этот человек уже в клубе")
+        if conn.execute("INSERT OR IGNORE INTO club_invites(club_id, invitee, inviter) VALUES(?, ?, ?)",
+                        (club_id, other, me)).rowcount:
+            _notify(conn, other, "club_invite", me, club_id)
+        return _club_view(conn, _club_row(conn, club_id), me)
+
+
+@app.post("/api/clubs/{club_id}/request")
+def request_to_join(club_id: int, user=Depends(current_user)):
+    """Ask to join a club that takes members by request; its owner and admins hear about it."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        club = _club_row(conn, club_id)
+        if _member_role(conn, club_id, me):
+            raise HTTPException(409, "Вы уже в клубе")
+        if club["visibility"] != "closed":
+            raise HTTPException(400, "В этот клуб заявки не подают")
+        if conn.execute("INSERT OR IGNORE INTO club_requests(club_id, tg_id) VALUES(?, ?)", (club_id, me)).rowcount:
+            for r in conn.execute("SELECT tg_id FROM club_members WHERE club_id=? AND role IN ('owner', 'admin')", (club_id,)).fetchall():
+                _notify(conn, r["tg_id"], "club_request", me, club_id)
+        return _club_view(conn, club, me)
+
+
+@app.delete("/api/clubs/{club_id}/request")
+def cancel_request(club_id: int, user=Depends(current_user)):
+    me = user["tg_id"]
+    with db.session() as conn:
+        club = _club_row(conn, club_id)
+        conn.execute("DELETE FROM club_requests WHERE club_id=? AND tg_id=?", (club_id, me))
+        # the owner and admins need not hear about a request that is gone, if they have not seen it yet
+        conn.execute("DELETE FROM notifications WHERE kind='club_request' AND actor=? AND club_id=? AND read_at IS NULL",
+                     (me, club_id))
+        return _club_view(conn, club, me)
+
+
+@app.post("/api/clubs/{club_id}/requests/{other}/accept")
+def accept_request(club_id: int, other: int, user=Depends(current_user)):
+    """The owner or an admin lets the student in."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        _require_role(conn, club_id, me, "owner", "admin")
+        if not conn.execute("DELETE FROM club_requests WHERE club_id=? AND tg_id=?", (club_id, other)).rowcount:
+            raise HTTPException(404, "Заявки уже нет")
+        conn.execute("INSERT OR IGNORE INTO club_members(club_id, tg_id, role) VALUES(?, ?, 'member')", (club_id, other))
+        conn.execute("DELETE FROM club_invites WHERE club_id=? AND invitee=?", (club_id, other))
+        _notify(conn, other, "request_accept", me, club_id)
+        return _club_view(conn, _club_row(conn, club_id), me)
+
+
+@app.delete("/api/clubs/{club_id}/requests/{other}")
+def decline_request(club_id: int, other: int, user=Depends(current_user)):
+    me = user["tg_id"]
+    with db.session() as conn:
+        _require_role(conn, club_id, me, "owner", "admin")
+        conn.execute("DELETE FROM club_requests WHERE club_id=? AND tg_id=?", (club_id, other))
+        return _club_view(conn, _club_row(conn, club_id), me)
+
+
+@app.delete("/api/clubs/{club_id}/invites/{other}")
+def drop_club_invite(club_id: int, other: int, user=Depends(current_user)):
+    """The invitee declines, or an owner or admin takes the invitation back."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        if other != me:
+            _require_role(conn, club_id, me, "owner", "admin")
+        conn.execute("DELETE FROM club_invites WHERE club_id=? AND invitee=?", (club_id, other))
+    return {"ok": True}
+
+
+class RoleIn(BaseModel):
+    role: str
+
+
+@app.post("/api/clubs/{club_id}/members/{other}/role")
+def set_club_role(club_id: int, other: int, body: RoleIn, user=Depends(current_user)):
+    """The owner makes a member an admin, or an admin a member again."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        _require_role(conn, club_id, me, "owner")
+        if other == me or _club_member(conn, club_id, other) == "owner":
+            raise HTTPException(400, "Свою роль владелец меняет, только передав права")
+        if body.role not in ("admin", "member"):
+            raise HTTPException(400, "Можно сделать админом или участником")
+        conn.execute("UPDATE club_members SET role=? WHERE club_id=? AND tg_id=?", (body.role, club_id, other))
+        if body.role == "admin":
+            _notify(conn, other, "club_admin", me, club_id)
+        return _club_view(conn, _club_row(conn, club_id), me)
+
+
+@app.get("/api/clubs/{club_id}/members/{other}/contact")
+def club_member_contact(club_id: int, other: int, user=Depends(current_user)):
+    """The Telegram chat link of a fellow member, asked for only when "write" is pressed:
+    the club's pages never carry anyone's @tag."""
+    with db.session() as conn:
+        _require_role(conn, club_id, user["tg_id"], "owner", "admin", "member")
+        _club_member(conn, club_id, other)
+        row = conn.execute("SELECT username FROM users WHERE tg_id=?", (other,)).fetchone()
+    if not row or not row["username"]:
+        raise HTTPException(404, "У этого человека нет тега в Telegram, поэтому написать ему отсюда не получится")
+    return {"url": f"https://t.me/{row['username']}"}
+
+
+@app.post("/api/clubs/{club_id}/transfer/{other}")
+def transfer_club(club_id: int, other: int, user=Depends(current_user)):
+    """Hand the club over: the member becomes the owner, the old owner stays on as an admin."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        _require_role(conn, club_id, me, "owner")
+        if other == me:
+            raise HTTPException(400, "Вы и так владелец")
+        _club_member(conn, club_id, other)
+        if _owned(conn, other) >= CLUB_OWN_MAX:
+            raise HTTPException(409, f"У этого человека уже {CLUB_OWN_MAX} своих клуба, больше владеть нельзя")
+        conn.execute("UPDATE club_members SET role='admin' WHERE club_id=? AND tg_id=?", (club_id, me))
+        conn.execute("UPDATE club_members SET role='owner' WHERE club_id=? AND tg_id=?", (club_id, other))
+        _notify(conn, other, "club_owner", me, club_id)
+        return _club_view(conn, _club_row(conn, club_id), me)
+
+
+@app.delete("/api/clubs/{club_id}/members/{other}")
+def remove_club_member(club_id: int, other: int, user=Depends(current_user)):
+    """The owner removes anyone else; an admin removes ordinary members."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        role = _require_role(conn, club_id, me, "owner", "admin")
+        theirs = _club_member(conn, club_id, other)
+        if other == me or theirs == "owner" or (role == "admin" and theirs == "admin"):
+            raise HTTPException(403, "Админ может исключать только обычных участников")
+        conn.execute("DELETE FROM club_members WHERE club_id=? AND tg_id=?", (club_id, other))
+        _notify(conn, other, "club_kicked", me, club_id)
+        return _club_view(conn, _club_row(conn, club_id), me)
+
+
+# ---------- a club's feed: news, announcements and jokes, for members' eyes only ----------
+
+def _author(conn, tg_id: int):
+    card = _card(conn, tg_id)
+    return {"tg_id": tg_id, "name": card["name"] if card else "Бывший участник",
+            "photo_url": card["photo_url"] if card else "", "group": card["group"] if card else ""}
+
+
+def _reactions(conn, post_id: int, me: int):
+    """Counts in the order of the set, only those someone chose, and this student's own choice."""
+    counts = dict(conn.execute("SELECT emoji, COUNT(*) FROM post_reactions WHERE post_id=? GROUP BY emoji", (post_id,)).fetchall())
+    mine = conn.execute("SELECT emoji FROM post_reactions WHERE post_id=? AND tg_id=?", (post_id, me)).fetchone()
+    return {"reactions": [{"emoji": e, "count": counts[e]} for e in REACTIONS if counts.get(e)],
+            "mine": mine["emoji"] if mine else None}
+
+
+def _post_card(conn, post, me: int, role: str | None):
+    return {"id": post["id"], "club_id": post["club_id"], "member": bool(role),
+            "body": post["body"], "created_at": post["created_at"],
+            "photo_url": f"/posts/{post['photo']}.jpg" if post["photo"] else "",
+            "author": _author(conn, post["author"]),
+            "can_delete": post["author"] == me or role in ("owner", "admin"),
+            "comments_off": bool(post["comments_off"]),
+            "public": bool(post["public"]),
+            "comments": conn.execute("SELECT COUNT(*) FROM post_comments WHERE post_id=?", (post["id"],)).fetchone()[0],
+            **_reactions(conn, post["id"], me)}
+
+
+def _club_post(conn, club_id: int, post_id: int):
+    post = conn.execute("SELECT * FROM club_posts WHERE id=? AND club_id=?", (post_id, club_id)).fetchone()
+    if not post:
+        raise HTTPException(404, "Такой записи нет")
+    return post
+
+
+def _drop_post(conn, post_id: int):
+    conn.execute("DELETE FROM post_reactions WHERE post_id=?", (post_id,))
+    conn.execute("DELETE FROM post_comments WHERE post_id=?", (post_id,))
+    conn.execute("DELETE FROM notifications WHERE post_id=?", (post_id,))
+    conn.execute("DELETE FROM club_posts WHERE id=?", (post_id,))
+
+
+@app.get("/api/clubs/{club_id}/posts")
+def club_posts(club_id: int, before: int | None = None, user=Depends(current_user)):
+    """The newest posts first, a page at a time; older ones with ?before=<the last id you have>.
+    Members read every post; a visitor who may open the club reads only the open ones."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        club = _club_row(conn, club_id)
+        role = _member_role(conn, club_id, me)
+        if not _can_view(conn, club, me, role):
+            raise HTTPException(404, "Такого клуба нет")
+        rows = conn.execute("SELECT * FROM club_posts WHERE club_id=? AND id < ? AND (public=1 OR ?) ORDER BY id DESC LIMIT ?",
+                            (club_id, before or 2 ** 62, int(bool(role)), POSTS_PAGE + 1)).fetchall()
+        return {"posts": [_post_card(conn, p, me, role) for p in rows[:POSTS_PAGE]], "more": len(rows) > POSTS_PAGE,
+                "reaction_set": list(REACTIONS)}
+
+
+def _close_profane_open_posts():
+    """Open posts published before the swearing filter: those that would not pass it now are left to the
+    club's members only, so the shared feed and the club's visitors never see them. Nothing is deleted."""
+    with db.session() as conn:
+        rows = conn.execute("SELECT id, body FROM club_posts WHERE public=1").fetchall()
+        closed = [r["id"] for r in rows if has_profanity(r["body"])]
+        for post_id in closed:
+            conn.execute("UPDATE club_posts SET public=0 WHERE id=?", (post_id,))
+    if closed:
+        log.info("swearing filter: %d open posts left to members only (%s)", len(closed), closed)
+
+
+@app.get("/api/feed")
+def shared_feed(before: int | None = None, user=Depends(current_user)):
+    """The shared feed: open posts of every club this student may open, newest first, each with its club."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        roles = dict(conn.execute("SELECT club_id, role FROM club_members WHERE tg_id=?", (me,)).fetchall())
+        clubs = {c["id"]: c for c in conn.execute("SELECT * FROM clubs").fetchall()
+                 if _can_view(conn, c, me, roles.get(c["id"]))}
+        if not clubs:
+            return {"posts": [], "more": False}
+        rows = conn.execute(f"SELECT * FROM club_posts WHERE public=1 AND club_id IN ({','.join('?' * len(clubs))}) "
+                            "AND id < ? ORDER BY id DESC LIMIT ?", (*clubs, before or 2 ** 62, POSTS_PAGE + 1)).fetchall()
+        posts = []
+        for p in rows[:POSTS_PAGE]:
+            c = clubs[p["club_id"]]
+            posts.append({**_post_card(conn, p, me, roles.get(c["id"])),
+                          "club": {"id": c["id"], "name": c["name"], "category": c["category"],
+                                   "photo_url": f"/avatars/{c['avatar']}.jpg" if c["avatar"] else ""}})
+        return {"posts": posts, "more": len(rows) > POSTS_PAGE}
+
+
+class PostIn(BaseModel):
+    body: str = Field("", max_length=10000)
+    photo: str | None = Field(None, max_length=12_000_000)   # the picture, base64
+    comments_off: bool = False
+    public: bool = False   # open to visitors of the club; members-only unless chosen
+
+
+def _encode_post_photo(raw: bytes) -> bytes:
+    """A feed photo keeps its shape, at most POST_PHOTO_SIDE on the long side, without metadata."""
+    img = ImageOps.exif_transpose(Image.open(BytesIO(raw))).convert("RGB")
+    img.thumbnail((POST_PHOTO_SIDE, POST_PHOTO_SIDE), Image.LANCZOS)
+    out = BytesIO()
+    img.save(out, "JPEG", quality=84, optimize=True)
+    return out.getvalue()
+
+
+@app.post("/api/clubs/{club_id}/posts")
+async def create_post(club_id: int, body: PostIn, user=Depends(current_user)):
+    """The owner and admins post text, a photo, or both."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        _club_row(conn, club_id)
+        role = _require_role(conn, club_id, me, "owner", "admin")
+    text = _clean_about(body.body)
+    if len(text) > POST_MAX:
+        raise HTTPException(400, f"Запись: не длиннее {POST_MAX} символов")
+    if body.public and has_profanity(text):
+        raise HTTPException(400, "В записях для всех нельзя использовать мат. Уберите его или выключите «Видна всем», "
+                                 "и запись увидят только участники клуба.")
+    photo = None
+    if body.photo:
+        try:
+            raw = base64.b64decode(body.photo, validate=True)
+        except ValueError:
+            raise HTTPException(400, "Это не похоже на фото")
+        if len(raw) > AVATAR_MAX_BYTES:
+            raise HTTPException(413, "Фото слишком большое")
+        try:
+            jpeg = await asyncio.to_thread(_encode_post_photo, raw)
+        except Exception:
+            raise HTTPException(400, "Это не похоже на фото")
+        photo = secrets.token_urlsafe(16)
+        (POSTS / f"{photo}.jpg").write_bytes(jpeg)
+    if not text and not photo:
+        raise HTTPException(400, "Напишите что-нибудь или прикрепите фото")
+    with db.session() as conn:
+        cur = conn.execute("INSERT INTO club_posts(club_id, author, body, photo, comments_off, public) VALUES(?, ?, ?, ?, ?, ?)",
+                           (club_id, me, text, photo, int(body.comments_off), int(body.public)))
+        for r in conn.execute("SELECT tg_id FROM club_members WHERE club_id=?", (club_id,)).fetchall():
+            _notify(conn, r["tg_id"], "club_post", me, club_id, cur.lastrowid, text or "Фото")
+        return _post_card(conn, conn.execute("SELECT * FROM club_posts WHERE id=?", (cur.lastrowid,)).fetchone(), me, role)
+
+
+@app.delete("/api/clubs/{club_id}/posts/{post_id}")
+def delete_post(club_id: int, post_id: int, user=Depends(current_user)):
+    """The author, the owner or an admin."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        post = _club_post(conn, club_id, post_id)
+        if post["author"] != me and _member_role(conn, club_id, me) not in ("owner", "admin"):
+            raise HTTPException(403, "Удалить запись могут автор, владелец и админы")
+        _drop_post(conn, post_id)
+    if post["photo"]:
+        (POSTS / f"{post['photo']}.jpg").unlink(missing_ok=True)
+    return {"deleted": True}
+
+
+class ReactionIn(BaseModel):
+    emoji: str
+
+
+@app.post("/api/clubs/{club_id}/posts/{post_id}/reaction")
+def react(club_id: int, post_id: int, body: ReactionIn, user=Depends(current_user)):
+    """One reaction per member: a new one replaces the old, the same one again takes it back."""
+    me = user["tg_id"]
+    if body.emoji not in REACTIONS:
+        raise HTTPException(400, "Такой реакции нет")
+    with db.session() as conn:
+        _require_role(conn, club_id, me, "owner", "admin", "member")
+        _club_post(conn, club_id, post_id)
+        had = conn.execute("SELECT emoji FROM post_reactions WHERE post_id=? AND tg_id=?", (post_id, me)).fetchone()
+        if had and had["emoji"] == body.emoji:
+            conn.execute("DELETE FROM post_reactions WHERE post_id=? AND tg_id=?", (post_id, me))
+        else:
+            conn.execute("INSERT INTO post_reactions(post_id, tg_id, emoji) VALUES(?, ?, ?) "
+                         "ON CONFLICT(post_id, tg_id) DO UPDATE SET emoji=excluded.emoji", (post_id, me, body.emoji))
+        return _reactions(conn, post_id, me)
+
+
+def _comment_card(conn, row, me: int, role: str | None):
+    return {"id": row["id"], "body": row["body"], "created_at": row["created_at"], "author": _author(conn, row["author"]),
+            "can_delete": row["author"] == me or role in ("owner", "admin")}
+
+
+@app.get("/api/clubs/{club_id}/posts/{post_id}/comments")
+def comments(club_id: int, post_id: int, user=Depends(current_user)):
+    """All of a post's comments, oldest first, like a chat. Visitors read those under open posts;
+    writing stays with the members."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        role = _member_role(conn, club_id, me)
+        post = _club_post(conn, club_id, post_id)
+        if not role and not (post["public"] and _can_view(conn, _club_row(conn, club_id), me, role)):
+            raise HTTPException(403, "Эту запись видят только участники клуба")
+        rows = conn.execute("SELECT * FROM post_comments WHERE post_id=? ORDER BY id", (post_id,)).fetchall()
+        return {"comments": [_comment_card(conn, r, me, role) for r in rows], "comments_off": bool(post["comments_off"]),
+                "can_comment": bool(role) and not post["comments_off"]}
+
+
+class CommentIn(BaseModel):
+    body: str = Field(max_length=5000)
+
+
+@app.post("/api/clubs/{club_id}/posts/{post_id}/comments")
+def add_comment(club_id: int, post_id: int, body: CommentIn, user=Depends(current_user)):
+    """Every member may comment, unless the post was published with comments off."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        role = _require_role(conn, club_id, me, "owner", "admin", "member")
+        post = _club_post(conn, club_id, post_id)
+        if post["comments_off"]:
+            raise HTTPException(403, "К этой записи комментарии отключены")
+        text = _clean_about(body.body)
+        if not text:
+            raise HTTPException(400, "Напишите комментарий")
+        if len(text) > COMMENT_MAX:
+            raise HTTPException(400, f"Комментарий: не длиннее {COMMENT_MAX} символов")
+        cur = conn.execute("INSERT INTO post_comments(post_id, author, body) VALUES(?, ?, ?)", (post_id, me, text))
+        _notify(conn, post["author"], "comment", me, club_id, post_id, text)
+        return _comment_card(conn, conn.execute("SELECT * FROM post_comments WHERE id=?", (cur.lastrowid,)).fetchone(), me, role)
+
+
+@app.delete("/api/clubs/{club_id}/posts/{post_id}/comments/{comment_id}")
+def delete_comment(club_id: int, post_id: int, comment_id: int, user=Depends(current_user)):
+    """The comment's author, the owner or an admin."""
+    me = user["tg_id"]
+    with db.session() as conn:
+        _club_post(conn, club_id, post_id)
+        row = conn.execute("SELECT author FROM post_comments WHERE id=? AND post_id=?", (comment_id, post_id)).fetchone()
+        if not row:
+            raise HTTPException(404, "Такого комментария нет")
+        if row["author"] != me and _member_role(conn, club_id, me) not in ("owner", "admin"):
+            raise HTTPException(403, "Удалить комментарий могут автор, владелец и админы")
+        conn.execute("DELETE FROM post_comments WHERE id=?", (comment_id,))
+    return {"deleted": True}
 
 
 @app.get("/api/avatar")
@@ -808,4 +1605,5 @@ async def avatar(user=Depends(current_user)):
 
 
 app.mount("/avatars", StaticFiles(directory=AVATARS), name="avatars")
+app.mount("/posts", StaticFiles(directory=POSTS), name="posts")
 app.mount("/", StaticFiles(directory=ROOT / "webapp", html=True), name="webapp")
