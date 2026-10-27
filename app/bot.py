@@ -1,5 +1,6 @@
 """Minimal Telegram bot: /start answers with a button that opens the Mini App; it also sends
-reminders and the morning summary, dressed in emoji (Telegram Premium ones once the owner sets them)."""
+reminders and the morning summary, dressed in emoji (Telegram Premium ones once the owner sets them),
+and confirms sign-ins of the app outside Telegram (/start login_<code>)."""
 import asyncio
 import html
 import json
@@ -32,6 +33,12 @@ class Bot:
         # hooks the app sets: who to re-point when the address changes, and where "open" buttons were sent
         self.on_url_change = None   # async (url) -> None
         self.on_open_button = None  # (chat_id, message_id) -> None
+        self.on_week = None         # async (chat_id) -> None: /week sends the pinned week again
+        self.on_login = None        # (sender, code) -> (text, keyboard | None): /start login_<code> from the app outside Telegram
+        self.on_login_answer = None # (sender, code, yes) -> text: the student's answer under that question
+        self.on_app = None          # async (chat_id) -> None: /app sends the offer of the app for the phone again
+        self.on_app_declined = None # (sender) -> text: «Нет, не надо» under that offer
+        self.username = None        # the bot's @name, known after setup()
         self.api = f"https://api.telegram.org/bot{token}"
         self.client = httpx.AsyncClient(timeout=40)
         self.custom = self._load_custom()
@@ -117,8 +124,13 @@ class Bot:
 
     async def setup(self):
         me = await self.call("getMe")
-        log.info("bot @%s", me.get("username"))
-        await self.call("setMyCommands", commands=[{"command": "start", "description": "Открыть расписание"}])
+        self.username = me.get("username")
+        log.info("bot @%s", self.username)
+        await self.call("setMyCommands", commands=[
+            {"command": "start", "description": "Открыть расписание"},
+            {"command": "week", "description": "Расписание недели в этом чате"},
+            {"command": "app", "description": "Приложение на телефон"},
+        ])
         return me
 
     async def file_url(self, user_id: int):
@@ -135,7 +147,7 @@ class Bot:
         while True:
             try:
                 updates = await self.call("getUpdates", offset=offset, timeout=30,
-                                          allowed_updates=["message"])
+                                          allowed_updates=["message", "callback_query"])
                 for u in updates:
                     offset = u["update_id"] + 1
                     await self.handle(u)
@@ -146,6 +158,9 @@ class Bot:
                 await asyncio.sleep(5)
 
     async def handle(self, update):
+        if "callback_query" in update:
+            await self.handle_button(update["callback_query"])
+            return
         msg = update.get("message") or {}
         chat = msg.get("chat", {}).get("id")
         if not chat:
@@ -154,6 +169,16 @@ class Bot:
         if (msg.get("text") or "").startswith("/emoji") and sender == OWNER:
             await self.set_custom_emoji(msg)
             return
+        if (msg.get("text") or "").startswith("/start login_") and self.on_login:
+            text, keyboard = self.on_login(msg.get("from", {}), msg["text"].split("login_", 1)[1].strip())
+            await self.call("sendMessage", chat_id=chat, text=text, **({"reply_markup": keyboard} if keyboard else {}))
+            return
+        if (msg.get("text") or "").startswith("/week") and self.on_week:
+            await self.on_week(chat)
+            return
+        if (msg.get("text") or "").split("@")[0].strip() == "/app" and self.on_app:
+            await self.on_app(chat)
+            return
         if not self.webapp_url:
             await self.call("sendMessage", chat_id=chat,
                             text="Приложение сейчас не запущено. Попробуйте позже.")
@@ -161,6 +186,21 @@ class Bot:
         sent = await self.call("sendMessage", chat_id=chat, text=GREETING, reply_markup=self.open_button())
         if self.on_open_button:
             self.on_open_button(chat, sent["message_id"])
+
+    async def handle_button(self, q):
+        """A tap on an inline button: "yes"/"no" under a sign-in question, or «Нет, не надо» under the app offer.
+        The answer replaces the message, and its buttons go with it."""
+        kind, _, rest = (q.get("data") or "").partition(":")
+        text = None
+        if kind == "login" and self.on_login_answer:
+            code, _, answer = rest.partition(":")
+            text = self.on_login_answer(q.get("from", {}), code, answer == "yes")
+        elif kind == "app" and rest == "no" and self.on_app_declined:
+            text = self.on_app_declined(q.get("from", {}))
+        await self.call("answerCallbackQuery", callback_query_id=q["id"])
+        msg = q.get("message")
+        if text and msg:
+            await self.call("editMessageText", chat_id=msg["chat"]["id"], message_id=msg["message_id"], text=text)
 
     def open_button(self, url=None):
         return {"inline_keyboard": [[{"text": "Открыть расписание", "web_app": {"url": url or self.webapp_url}}]]}

@@ -5,7 +5,8 @@
     python run.py --local        # server only, open http://localhost:8080 in a browser (test user)
 
 The tunnel's public address is written to data/webapp_url.txt; the bot picks it up
-and re-points its menu button whenever the address changes.
+and re-points its menu button whenever the address changes. With WEBAPP_URL in .env
+(a server behind nginx with its own domain) there is no tunnel: that address is the app's.
 """
 import argparse
 import os
@@ -102,7 +103,9 @@ def main():
     args = parser.parse_args()
     port = int(os.getenv("PORT", "8080"))
     URL_FILE.unlink(missing_ok=True)  # an old tunnel address is dead by now
-    if not args.local:
+    if os.getenv("WEBAPP_URL"):
+        print(f"\n  Mini App URL: {os.getenv('WEBAPP_URL')} (permanent, no tunnel)", flush=True)
+    elif not args.local:
         has_cloudflared = (ROOT / "bin" / ("cloudflared.exe" if os.name == "nt" else "cloudflared")).exists()
         kind = "ssh" if args.ssh or not has_cloudflared else "cloudflared"
         threading.Thread(target=keep_tunnel, args=(kind, port), daemon=True).start()

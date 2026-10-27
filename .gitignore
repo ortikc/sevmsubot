@@ -7,3 +7,10 @@ __pycache__/
 .playwright-mcp/
 .taste-skill/inspect/
 .taste-skill/shots/
+
+# HyperFrames: renders and working artifacts are rebuilt, staged copies come from capture/assets
+videos/*/renders/
+videos/*/.hyperframes/
+videos/*/assets/*.png
+videos/*/.thumbnails/
+videos/*/.waveform-cache/

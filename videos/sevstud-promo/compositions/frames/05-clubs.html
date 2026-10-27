@@ -1,0 +1,75 @@
+<template>
+  <style>
+@font-face{font-family:"Inter";font-weight:400 900;font-style:normal;font-display:block;src:url("assets/fonts/Inter-400_900-cyrillic.woff2") format("woff2");unicode-range:U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;}
+@font-face{font-family:"Inter";font-weight:400 900;font-style:normal;font-display:block;src:url("assets/fonts/Inter-400_900-latin.woff2") format("woff2");unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+@font-face{font-family:"IBM Plex Mono";font-weight:500;font-style:normal;font-display:block;src:url("assets/fonts/IBMPlexMono-500-cyrillic.woff2") format("woff2");unicode-range:U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;}
+@font-face{font-family:"IBM Plex Mono";font-weight:500;font-style:normal;font-display:block;src:url("assets/fonts/IBMPlexMono-500-latin.woff2") format("woff2");unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+@font-face{font-family:"IBM Plex Mono";font-weight:600;font-style:normal;font-display:block;src:url("assets/fonts/IBMPlexMono-600-cyrillic.woff2") format("woff2");unicode-range:U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;}
+@font-face{font-family:"IBM Plex Mono";font-weight:600;font-style:normal;font-display:block;src:url("assets/fonts/IBMPlexMono-600-latin.woff2") format("woff2");unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+
+#root { position: absolute; inset: 0; width: 1080px; height: 1920px; overflow: hidden; color: #FFFFFF;
+  font-family: "Inter", sans-serif; -webkit-font-smoothing: antialiased; }
+.ground { position: absolute; inset: 0; background: #000000; }
+.stage { position: absolute; inset: 0; }
+.h { position: absolute; left: 70px; right: 70px; top: 160px; font-weight: 800; font-size: 96px; line-height: 0.98;
+  letter-spacing: -0.03em; }
+.h .w { display: inline-block; }
+.acc { color: #4DA3FF; }
+.label { font-family: "IBM Plex Mono", monospace; font-weight: 600; font-size: 30px; letter-spacing: 0.12em;
+  text-transform: uppercase; }
+.chip { position: absolute; font-size: 28px; padding: 14px 20px; background: #000000; border: 2px solid #4DA3FF; border-radius: 6px;
+  color: #FFFFFF; white-space: nowrap; }
+.glow { position: absolute; border-radius: 50%; background: radial-gradient(circle, rgba(77,163,255,0.34) 0%,
+  rgba(77,163,255,0.10) 38%, rgba(77,163,255,0) 68%); }
+.phone { position: absolute; left: 230px; top: 585px; width: 620px; height: 1307px; border-radius: 78px;
+  background: #0B0B0D; box-shadow: 0 0 0 2px #282826; }
+.screen { position: absolute; left: 15px; top: 15px; width: 590px; height: 1277px; border-radius: 64px;
+  overflow: hidden; background: #000000; }
+.screen img { position: absolute; left: 0; top: 0; width: 590px; height: 1277px; }
+.box { position: absolute; border: 3px solid #4DA3FF; border-radius: 30px; }
+.num { font-variant-numeric: tabular-nums; }
+
+.big { position: absolute; left: 70px; top: 150px; font-weight: 900; font-size: 150px; line-height: 0.9; letter-spacing: -0.045em; }
+.tags { position: absolute; left: 74px; top: 330px; color: #FFFFFF; }
+.tags .w { display: inline-block; margin-right: 18px; }
+.tags .dot { color: #4DA3FF; }
+.rb { position: absolute; left: 299px; top: 1658px; width: 120px; height: 120px; border-radius: 50%; background: #141518;
+  border: 2px solid #4DA3FF; display: flex; align-items: center; justify-content: center; font-size: 62px; line-height: 1; }
+
+  </style>
+  <div data-hf-id="hf-gdiw" id="root" data-composition-id="05-clubs" data-width="1080" data-height="1920" data-duration="4.471">
+    <div data-hf-id="hf-xmuk" id="f05-ground" class="ground clip" data-start="0" data-duration="4.471" data-track-index="0"></div>
+    <div data-hf-id="hf-2p6l" id="f05-stage" class="stage clip" data-start="0" data-duration="4.471" data-track-index="1">
+
+      <div data-hf-id="hf-w808" data-layout-allow-overlap class="big">студ<span data-hf-id="hf-cvek" class="acc">клубы</span></div>
+      <div data-hf-id="hf-vkhd" class="tags label"><span data-hf-id="hf-gx0x" class="w">лента</span><span data-hf-id="hf-jbwm" class="w dot">/</span><span data-hf-id="hf-gv95" class="w">реакции</span><span data-hf-id="hf-oowa" class="w dot">/</span><span data-hf-id="hf-p0fg" class="w">комментарии</span></div>
+      <div data-hf-id="hf-kda4" class="phone"><div data-hf-id="hf-cdmk" class="screen"><img data-hf-id="hf-82oz" class="scr scr-s07-clubs" src="assets/s07-clubs.png" alt=""><img data-hf-id="hf-fzkd" class="scr scr-s08-club" src="assets/s08-club.png" alt=""></div></div>
+      <div data-hf-id="hf-056b" class="rb rb1">👍</div><div data-hf-id="hf-i2tb" class="rb rb2">❤️</div><div data-hf-id="hf-h2ut" class="rb rb3">🔥</div>
+
+    </div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <script>
+    (() => {
+      const all = document.querySelectorAll('[data-composition-id="05-clubs"]');
+      const root = all[all.length - 1];
+      const $ = (s) => root.querySelector(s);
+      const $$ = (s) => Array.from(root.querySelectorAll(s));
+      const tl = gsap.timeline({ paused: true });
+
+      tl.set($(".scr-s08-club"), { opacity: 0 }, 0);
+      tl.fromTo($(".big"), { opacity: 0, x: -60 }, { opacity: 1, x: 0, duration: 0.5, ease: "power3.out" }, 0.0);
+      tl.fromTo($$(".tags .w"), { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.3, ease: "power3.out", stagger: 0.242 }, 0.968);
+      tl.to($(".scr-s07-clubs"), { scale: 0.94, opacity: 0, duration: 0.28, ease: "power2.in" }, 1.855);tl.fromTo($(".scr-s08-club"), { scale: 1.06, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.42, ease: "power3.out" }, 1.935);
+      const targets = [[600, -470], [640, -680], [560, -880]];
+      $$(".rb").forEach((el, i) => {
+        const t = 2.419 + i * 0.242;
+        tl.fromTo(el, { x: 40 + i * 110, y: 0, scale: 0.3, opacity: 0 }, { x: targets[i][0], y: targets[i][1], scale: 1, opacity: 1, duration: 0.55, ease: "expo.out" }, t);
+        tl.to(el, { y: targets[i][1] - 26, duration: 1.2, ease: "sine.inOut" }, t + 0.55);
+      });
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["05-clubs"] = tl;
+    })();
+  </script>
+</template>

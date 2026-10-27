@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>Согласие на обработку персональных данных · Расписание МГУ Севастополь</title>
+  <script>
+    (function () {
+      var pref = "auto";
+      try { pref = localStorage.getItem("msu.theme") || "auto"; } catch (e) {}
+      var sys = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      document.documentElement.dataset.theme = pref === "auto" ? sys : pref;
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+<main class="doc-page">
+<!-- the app shows #doc when the consent is tapped; a separate document from the policy, as 152-ФЗ asks -->
+<article class="doc" id="doc">
+  <h1>Согласие на обработку персональных данных</h1>
+  <p class="doc-date">Редакция 2 от 27 октября 2026 года</p>
+
+  <p>Ставя отметку «Даю согласие», я свободно, своей волей и в своём интересе соглашаюсь на обработку моих персональных данных на этих условиях.</p>
+
+  <dl class="doc-terms">
+    <dt>Кто обрабатывает</dt>
+    <dd>Разработчик неофициального студенческого приложения «Расписание МГУ Севастополь» и бота @sevmsubot. Связь: Telegram <a href="https://t.me/ortikc">@ortikc</a>.</dd>
+
+    <dt>Зачем</dt>
+    <dd>Чтобы показывать расписание моей группы и статистику по нему; присылать напоминания, утреннюю сводку и неделю в чате с ботом, если я их включу; чтобы работали друзья, огоньки, клубы, лента и уведомления.</dd>
+
+    <dt>Какие данные</dt>
+    <dd>Telegram ID, имя, фамилия, @тег и фото профиля из Telegram; настоящие имя и фамилия, направление, курс, группа; ник, своё фото и «о себе», если я их укажу; друзья и заявки, огоньки, напоминания и настройки, клубы, мои записи, комментарии и реакции, уведомления; устройства, где выполнен вход в приложение вне Telegram (тип устройства и браузера, даты входа и последнего захода).</dd>
+
+    <dt>Что с ними делают</dt>
+    <dd>Собирают, записывают, систематизируют, хранят, уточняют, используют, показывают другим пользователям так, как описано в политике конфиденциальности, создают резервные копии, удаляют. Обработка автоматизированная.</dd>
+
+    <dt>Кому видны и через кого передаются</dt>
+    <dd>Имя или ник, фото, «о себе», направление, курс и группа видны моим друзьям, тем, кто ищет меня по точному @тегу, а также участникам и посетителям моих клубов; друзьям видно и расписание моей группы. Хранятся данные на арендованном сервере в России (Timeweb Cloud); приложение и бот работают через Telegram.</dd>
+
+    <dt>Срок</dt>
+    <dd>Согласие действует, пока я его не отзову. Данные хранятся, пока существует мой аккаунт, а в резервных копиях — ещё до 14 дней после удаления.</dd>
+
+    <dt>Как отозвать</dt>
+    <dd>В любой момент: кнопкой «Удалить аккаунт» в настройках приложения или сообщением <a href="https://t.me/ortikc">@ortikc</a>. После этого мои данные удаляются.</dd>
+  </dl>
+
+  <p>Подробнее о том, что хранится и кто это видит, — в <a href="privacy.html" data-doc="privacy">политике конфиденциальности</a>.</p>
+</article>
+</main>
+</body>
+</html>

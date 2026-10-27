@@ -2,8 +2,10 @@
 import asyncio
 import base64
 import hashlib
+import hmac
 import html
 import logging
+import mimetypes
 import os
 import re
 import secrets
@@ -15,13 +17,13 @@ from urllib.parse import parse_qsl
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import Response
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
-from . import db, scraper
+from . import backup, db, scraper
 from .auth import AuthError, validate_init_data
 from .bot import Bot
 from .profanity import has_profanity
@@ -36,6 +38,7 @@ AVATARS.mkdir(parents=True, exist_ok=True)
 AVATAR_SIZE = 256
 AVATAR_MAX_BYTES = 8 * 1024 * 1024
 NICK_MAX = 32
+CONSENT_VERSION = "2026-10-27.2"   # the edition of the consent and privacy policy; a new one asks everyone again
 BIO_MAX = 200
 Image.MAX_IMAGE_PIXELS = 50_000_000
 FULL_SYNC_EVERY = timedelta(hours=6)
@@ -46,6 +49,15 @@ LEADS = (5, 10, 15)                                        # "remind about every
 DIGEST_TIMES = ("06:30", "07:00", "07:30", "08:00", "08:30")  # morning summary
 REFRESH_COOLDOWN = timedelta(seconds=60)
 KINDS = {"лк": "лекция", "сем": "семинар", "пз": "практика", "лб": "лабораторная", "лаб": "лабораторная"}
+BOT_USERNAME = os.getenv("BOT_USERNAME", "sevmsubot")   # for the sign-in link until the bot has said its name
+LOGIN_MINUTES = 10           # a sign-in through the bot must be confirmed within this
+LOGINS_MAX = 200             # sign-ins waiting at once, so nobody can fill the table
+DEVICE_IDLE_DAYS = 180       # a device that has not opened the app for half a year is signed out
+INSTALL_LINK_HOURS = 24      # the «Скачать» button under the bot's offer works once, for a day
+APP_OFFER = ("Поставьте «Расписание» на главный экран телефона: пары, статистика и друзья будут открываться "
+             "даже без интернета.\n\nНажмите «Скачать»: откроется браузер, вход уже будет выполнен, а стрелки "
+             "и подсказки покажут, куда нажать.")
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -87,7 +99,8 @@ def materialize_auto_reminders(conn, now: datetime, tg_id: int | None = None):
     """'Remind about every pair' becomes reminder rows for today and tomorrow, one per pair slot."""
     today = now.astimezone(MSK).date()
     users = conn.execute(
-        "SELECT tg_id, group_id, remind_lead FROM users WHERE remind_all=1 AND group_id IS NOT NULL"
+        "SELECT tg_id, group_id, remind_lead FROM users WHERE remind_all=1 AND group_id IS NOT NULL "
+        "AND consent_at IS NOT NULL"
         + (" AND tg_id=?" if tg_id else ""), (tg_id,) if tg_id else (),
     ).fetchall()
     for u in users:
@@ -129,7 +142,7 @@ def _digest_html(slots, e):
 async def send_due_reminders(now: datetime):
     with db.session() as conn:
         due = [dict(r) for r in conn.execute(
-            "SELECT r.*, u.group_id FROM reminders r JOIN users u ON u.tg_id = r.tg_id "
+            "SELECT r.*, u.group_id, u.consent_at FROM reminders r JOIN users u ON u.tg_id = r.tg_id "
             "WHERE r.sent_at IS NULL AND r.remind_at <= ? ORDER BY r.remind_at",
             (now.isoformat(timespec="seconds"),))]
     for r in due:
@@ -137,7 +150,7 @@ async def send_due_reminders(now: datetime):
             # the schedule may have changed since the reminder was set: stay quiet about a pair that is gone
             still = conn.execute("SELECT 1 FROM lessons WHERE group_id=? AND date=? AND start=?",
                                  (r["group_id"], r["date"], r["start"])).fetchone()
-        if still:
+        if still and r["consent_at"]:  # without consent the reminder is dropped, never sent late
             try:
                 await bot.send_rich(r["tg_id"], lambda e: _reminder_html(r, e))
             except Exception as e:  # the student may have blocked the bot; never retry forever
@@ -155,6 +168,7 @@ async def send_digests(now: datetime):
     with db.session() as conn:
         users = [dict(u) for u in conn.execute(
             "SELECT tg_id, group_id, digest_time FROM users WHERE digest_time IS NOT NULL AND group_id IS NOT NULL "
+            "AND consent_at IS NOT NULL "
             "AND (digest_sent_on IS NULL OR digest_sent_on < ?) AND digest_time <= ?", (today, hhmm))]
     for u in users:
         with db.session() as conn:
@@ -168,6 +182,178 @@ async def send_digests(now: datetime):
             await bot.send_rich(u["tg_id"], lambda e: _digest_html(slots, e))
         except Exception as e:
             log.warning("digest for %s not sent: %s", u["tg_id"], e)
+
+
+# ---------- the week in the bot's chat: a pinned message that is there without internet ----------
+# Telegram keeps a chat's messages on the phone, so the week's pairs, pinned in the chat with the bot,
+# can be read with no connection at all. One message per student, edited in place whenever the week changes.
+
+WEEKDAYS_RU = ("Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье")
+MONTHS_RU = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа",
+             "сентября", "октября", "ноября", "декабря")
+WEEK_EVERY = 10 * 60   # how often the pinned weeks are compared with the schedule, in seconds
+
+
+def _day_ru(d: date) -> str:
+    return f"{d.day} {MONTHS_RU[d.month - 1]}"
+
+
+def _week_body(conn, group_id: int, today: date) -> tuple[str, str]:
+    """The week's pairs as the bot writes them: (title, days). On Sunday it is already next week."""
+    monday = today - timedelta(days=today.weekday()) + timedelta(days=7 if today.weekday() == 6 else 0)
+    group = conn.execute("SELECT name FROM groups WHERE id=?", (group_id,)).fetchone()
+    rows = conn.execute("SELECT date, start, end, subject, kind, room FROM lessons WHERE group_id=? AND date BETWEEN ? AND ? "
+                        "ORDER BY date, start, subject", (group_id, monday.isoformat(), (monday + timedelta(days=6)).isoformat()))
+    by_day = {}
+    for r in rows:
+        by_day.setdefault(r["date"], []).append(r)
+    days = []
+    for i in range(7):
+        d = monday + timedelta(days=i)
+        lessons = by_day.get(d.isoformat(), [])
+        if i == 6 and not lessons:
+            continue   # Sunday only when there is something on it
+        head = f"<b>{WEEKDAYS_RU[i]}, {_day_ru(d)}</b>{' · сегодня' if d == today else ''}"
+        lines = []
+        for l in lessons:
+            kind = KINDS.get((l["kind"] or "").lower(), l["kind"] or "")
+            extra = ", ".join(x for x in (kind, f"ауд. {l['room']}" if l["room"] else "") if x)
+            lines.append(f"{_clock(l['start'])}–{_clock(l['end'])} · {html.escape(l['subject'])}"
+                         f"{f' ({html.escape(extra)})' if extra else ''}")
+        days.append(f"{head}\n" + ("\n".join(lines) if lines else "Пар нет"))
+    title = (f"📅 <b>Расписание {html.escape(group['name'] if group else '')}</b>\n"
+             f"Неделя {_day_ru(monday)} – {_day_ru(monday + timedelta(days=5))}")
+    return title, "\n\n".join(days)[:3500]
+
+
+async def _sync_week(tg_id: int, fresh: bool = False):
+    """Send and pin, or edit, one student's week so it says what the schedule says; quiet when nothing changed.
+    fresh: a new message even if the old one is fine (the /week command)."""
+    if not bot or tg_id <= 1:
+        return
+    now = datetime.now(MSK)
+    with db.session() as conn:
+        u = conn.execute("SELECT group_id, bot_week, week_msg, week_hash, consent_at FROM users WHERE tg_id=?",
+                         (tg_id,)).fetchone()
+        if not u or not u["group_id"] or not u["bot_week"] or not u["consent_at"]:
+            return
+        title, days = _week_body(conn, u["group_id"], now.date())
+    digest = hashlib.sha1(f"{title}\n{days}".encode()).hexdigest()
+    unchanged = u["week_msg"] and u["week_hash"] == digest
+    unreachable = u["week_hash"] == f"failed:{now.date()}"   # tried today already; tomorrow again
+    if not fresh and (unchanged or unreachable):
+        return
+    text = (f"{title}\n\n{days}\n\n<i>Обновлено {_day_ru(now.date())} в {now:%H:%M}. "
+            "Сообщение обновляется само, и его видно даже без интернета.</i>")
+    msg_id = None if fresh else u["week_msg"]
+    try:
+        if msg_id:
+            try:
+                await bot.call("editMessageText", chat_id=tg_id, message_id=msg_id, text=text, parse_mode="HTML")
+            except RuntimeError as e:
+                if "not modified" not in str(e):
+                    msg_id = None   # the student deleted it, or it can no longer be edited: send a new one
+        if not msg_id:
+            if u["week_msg"]:
+                await _retire_week_message(tg_id, u["week_msg"])
+            msg_id = (await bot.call("sendMessage", chat_id=tg_id, text=text, parse_mode="HTML",
+                                     disable_notification=True))["message_id"]
+            try:
+                await bot.call("pinChatMessage", chat_id=tg_id, message_id=msg_id, disable_notification=True)
+            except RuntimeError as e:
+                log.warning("week pin for %s: %s", tg_id, e)
+    except Exception as e:   # blocked the bot, never started it: try again tomorrow
+        log.warning("week message for %s: %s", tg_id, e)
+        with db.session() as conn:
+            conn.execute("UPDATE users SET week_hash=? WHERE tg_id=?", (f"failed:{now.date()}", tg_id))
+        return
+    with db.session() as conn:
+        conn.execute("UPDATE users SET week_msg=?, week_hash=? WHERE tg_id=?", (msg_id, digest, tg_id))
+
+
+async def _retire_week_message(tg_id: int, msg_id: int):
+    """Take an old week message away: delete it, or if Telegram no longer allows that, unpin it and say so."""
+    try:
+        await bot.call("deleteMessage", chat_id=tg_id, message_id=msg_id)
+        return
+    except RuntimeError:
+        pass
+    for method, params in (("unpinChatMessage", {"message_id": msg_id}),
+                           ("editMessageText", {"message_id": msg_id, "text": "Это расписание устарело, актуальное закреплено ниже."})):
+        try:
+            await bot.call(method, chat_id=tg_id, **params)
+        except RuntimeError:
+            pass
+
+
+async def _drop_week(tg_id: int):
+    """The setting was turned off: the pinned week leaves the chat."""
+    with db.session() as conn:
+        u = conn.execute("SELECT week_msg FROM users WHERE tg_id=?", (tg_id,)).fetchone()
+        conn.execute("UPDATE users SET week_msg=NULL, week_hash=NULL WHERE tg_id=?", (tg_id,))
+    if bot and u and u["week_msg"]:
+        try:
+            await bot.call("deleteMessage", chat_id=tg_id, message_id=u["week_msg"])
+        except RuntimeError:
+            for method, params in (("unpinChatMessage", {"message_id": u["week_msg"]}),
+                                   ("editMessageText", {"message_id": u["week_msg"],
+                                                        "text": "Расписание недели в этом чате выключено. Включить снова можно в настройках приложения."})):
+                try:
+                    await bot.call(method, chat_id=tg_id, **params)
+                except RuntimeError:
+                    pass
+
+
+async def _week_command(chat_id: int):
+    """/week: the pinned week again, at once; it also turns the setting back on."""
+    with db.session() as conn:
+        u = conn.execute("SELECT group_id FROM users WHERE tg_id=?", (chat_id,)).fetchone()
+        if u and u["group_id"]:
+            conn.execute("UPDATE users SET bot_week=1 WHERE tg_id=?", (chat_id,))
+    if not u or not u["group_id"]:
+        await bot.call("sendMessage", chat_id=chat_id,
+                       text="Сначала откройте приложение и выберите свою группу, тогда я пришлю расписание недели.")
+        return
+    await _sync_week(chat_id, fresh=True)
+
+
+async def week_loop():
+    """Keeps every pinned week true: the schedule changes, the day turns, a new week begins."""
+    await asyncio.sleep(20)   # the bot first
+    while True:
+        if bot:
+            with db.session() as conn:
+                ids = [r["tg_id"] for r in conn.execute(
+                    "SELECT tg_id FROM users WHERE tg_id > 1 AND group_id IS NOT NULL AND bot_week=1 "
+                    "AND consent_at IS NOT NULL")]
+            for tg_id in ids:
+                try:
+                    await _sync_week(tg_id)
+                except Exception as e:
+                    log.warning("week loop for %s: %s", tg_id, e)
+                await asyncio.sleep(0.2)
+        await asyncio.sleep(WEEK_EVERY)
+
+
+BACKUPS = ROOT / "data" / "backups"
+BACKUP_KEEP = 14   # two weeks of daily copies
+
+
+async def backup_loop():
+    """A copy of the database once a day (by Moscow date), as soon as the server is up that day.
+    The same round signs out devices nobody has opened the app on for half a year."""
+    while True:
+        with db.session() as conn:
+            conn.execute("DELETE FROM devices WHERE seen_at < datetime('now', ?)", (f"-{DEVICE_IDLE_DAYS} days",))
+            conn.execute("DELETE FROM install_links WHERE created_at < datetime('now', ?)", (f"-{INSTALL_LINK_HOURS} hours",))
+        stamp = datetime.now(MSK).date().isoformat()
+        if not (BACKUPS / f"msu-{stamp}.sqlite3").exists():
+            try:
+                path = await asyncio.to_thread(backup.make_backup, db.DB_PATH, BACKUPS, stamp, BACKUP_KEEP)
+                log.info("backup: %s", path.name)
+            except Exception as e:
+                log.warning("backup failed: %s", e)
+        await asyncio.sleep(30 * 60)
 
 
 async def reminder_loop():
@@ -204,11 +390,17 @@ async def lifespan(_app):
     global bot
     db.init()
     _close_profane_open_posts()
-    tasks = [asyncio.create_task(full_sync_loop()), asyncio.create_task(reminder_loop())]
+    tasks = [asyncio.create_task(full_sync_loop()), asyncio.create_task(reminder_loop()), asyncio.create_task(backup_loop()),
+             asyncio.create_task(week_loop())]
     if BOT_TOKEN:
         bot = Bot(BOT_TOKEN, os.getenv("WEBAPP_URL", ""), ROOT / "data" / "webapp_url.txt")
         bot.on_url_change = _repoint_everyone
         bot.on_open_button = _remember_open_button
+        bot.on_week = _week_command
+        bot.on_login = _login_ask
+        bot.on_login_answer = _login_answer
+        bot.on_app = _app_command
+        bot.on_app_declined = _app_declined
         try:
             await bot.setup()
             tasks.append(asyncio.create_task(bot.poll()))
@@ -226,7 +418,7 @@ app = FastAPI(lifespan=lifespan)
 @app.middleware("http")
 async def no_stale_assets(request: Request, call_next):
     response = await call_next(request)
-    if not request.url.path.startswith("/api/"):
+    if not request.url.path.startswith("/api/") and "cache-control" not in response.headers:
         response.headers["Cache-Control"] = "no-cache"
     return response
 
@@ -245,6 +437,9 @@ def current_tg_user(request: Request) -> dict:
             log.warning("auth rejected: %s (fields: %s)", e,
                         ",".join(sorted(k for k, _ in parse_qsl(init_data))))
             raise HTTPException(401, f"Telegram auth failed: {e}")
+    auth = request.headers.get("authorization", "")
+    if auth[:7].lower() == "bearer ":
+        return _device_user(auth[7:].strip())
     host = (request.headers.get("host") or "").split(":")[0]
     if DEV_AUTH and host in ("localhost", "127.0.0.1"):
         dev_id = request.headers.get("X-Dev-User", "")
@@ -259,16 +454,54 @@ def current_tg_user(request: Request) -> dict:
     raise HTTPException(401, "Open the app from Telegram")
 
 
-def current_user(tg: dict = Depends(current_tg_user)):
+def _hash(secret: str) -> str:
+    return hashlib.sha256(secret.encode()).hexdigest()
+
+
+def _device_user(key: str) -> dict:
+    """The app on a phone's home screen, outside Telegram: it shows the key it got at sign-in through the bot."""
     with db.session() as conn:
-        conn.execute(
-            "INSERT INTO users(tg_id, tg_first, tg_last, username, photo_url) VALUES(?,?,?,?,?) "
-            "ON CONFLICT(tg_id) DO UPDATE SET tg_first=excluded.tg_first, tg_last=excluded.tg_last, "
-            "username=excluded.username, photo_url=excluded.photo_url, updated_at=datetime('now')",
-            (tg["id"], tg.get("first_name", ""), tg.get("last_name", ""), tg.get("username", ""),
-             tg.get("photo_url", "")),
-        )
+        row = conn.execute("SELECT d.id AS device_id, u.* FROM devices d JOIN users u ON u.tg_id = d.tg_id "
+                           "WHERE d.key_hash=?", (_hash(key),)).fetchone()
+        if not row:
+            raise HTTPException(401, "Вход на этом устройстве закончился, войдите снова")
+        conn.execute("UPDATE devices SET seen_at=datetime('now') WHERE id=? AND seen_at < datetime('now', '-10 minutes')",
+                     (row["device_id"],))
+    return {"id": row["tg_id"], "first_name": row["tg_first"], "last_name": row["tg_last"],
+            "username": row["username"], "photo_url": row["photo_url"], "device_id": row["device_id"]}
+
+
+def _device_name(ua: str) -> str:
+    """"Android · Chrome" from a User-Agent: enough to tell one's own devices apart in the list."""
+    system = next((name for key, name in (("iPhone", "iPhone"), ("iPad", "iPad"), ("Android", "Android"),
+                                          ("Windows", "Windows"), ("Mac OS X", "Mac"), ("CrOS", "ChromeOS"),
+                                          ("Linux", "Linux")) if key in ua), "")
+    browser = next((name for key, name in (("YaBrowser", "Яндекс Браузер"), ("SamsungBrowser", "Samsung Internet"),
+                                           ("Edg", "Edge"), ("OPR/", "Opera"), ("Firefox/", "Firefox"),
+                                           ("FxiOS", "Firefox"), ("CriOS", "Chrome"), ("Chrome/", "Chrome"),
+                                           ("Safari/", "Safari")) if key in ua), "")
+    return " · ".join(filter(None, (system, browser))) or "Браузер"
+
+
+def current_user(tg: dict = Depends(current_tg_user)):
+    """The student's row with the Telegram fields refreshed. A newcomer is not written down until they
+    consent (a tick on the last onboarding step): until then they get a row that lives only for this request."""
+    fields = {"tg_first": tg.get("first_name", ""), "tg_last": tg.get("last_name", ""),
+              "username": tg.get("username", ""), "photo_url": tg.get("photo_url", "")}
+    with db.session() as conn:
+        if not conn.execute("SELECT 1 FROM users WHERE tg_id=?", (tg["id"],)).fetchone():
+            blank = dict.fromkeys(c[0] for c in conn.execute("SELECT * FROM users LIMIT 0").description)
+            return {**blank, **fields, "tg_id": tg["id"]}
+        conn.execute("UPDATE users SET tg_first=:tg_first, tg_last=:tg_last, username=:username, "
+                     "photo_url=:photo_url, updated_at=datetime('now') WHERE tg_id=:id", {**fields, "id": tg["id"]})
         return dict(conn.execute("SELECT * FROM users WHERE tg_id=?", (tg["id"],)).fetchone())
+
+
+def consented_user(user=Depends(current_user)):
+    """Everything past the onboarding needs consent to the current edition of the policy."""
+    if user["consent_version"] != CONSENT_VERSION:
+        raise HTTPException(403, "Сначала нужно согласие на обработку персональных данных")
+    return user
 
 
 # ---------- api ----------
@@ -298,6 +531,8 @@ def _profile(conn, user):
         "bio": user["bio"],
         "group": group,
         "onboarded": bool(user["real_name"] and group),
+        "consent": user["consent_version"] == CONSENT_VERSION,
+        "consent_at": user["consent_at"],
     }
 
 
@@ -328,21 +563,89 @@ def catalog():
 class ProfileIn(BaseModel):
     real_name: str = Field(min_length=2, max_length=80)
     group_id: int
+    consent: bool = False   # the tick under the name: consent to processing and the privacy policy
 
 
 @app.post("/api/profile")
-def save_profile(body: ProfileIn, user=Depends(current_user)):
+def save_profile(body: ProfileIn, background: BackgroundTasks, user=Depends(current_user)):
     name = " ".join(body.real_name.split())
+    agrees = user["consent_version"] == CONSENT_VERSION or body.consent
+    if not agrees:
+        raise HTTPException(400, "Отметьте согласие с политикой конфиденциальности: без него приложение не может сохранить ваши данные")
     with db.session() as conn:
         g = conn.execute("SELECT * FROM groups WHERE id=?", (body.group_id,)).fetchone()
         if not g:
             raise HTTPException(400, "Такой группы нет")
+        newcomer = not conn.execute("SELECT 1 FROM users WHERE tg_id=?", (user["tg_id"],)).fetchone()
+        conn.execute("INSERT INTO users(tg_id, tg_first, tg_last, username, photo_url) VALUES(?, ?, ?, ?, ?) "
+                     "ON CONFLICT(tg_id) DO NOTHING",
+                     (user["tg_id"], user["tg_first"], user["tg_last"], user["username"], user["photo_url"]))
         conn.execute(
             "UPDATE users SET real_name=?, group_id=?, faculty_id=?, course=?, updated_at=datetime('now') "
             "WHERE tg_id=?", (name, g["id"], g["faculty_id"], g["course"], user["tg_id"]),
         )
+        if user["consent_version"] != CONSENT_VERSION:
+            conn.execute("UPDATE users SET consent_at=?, consent_version=? WHERE tg_id=?",
+                         (datetime.now(timezone.utc).isoformat(timespec="seconds"), CONSENT_VERSION, user["tg_id"]))
         user = dict(conn.execute("SELECT * FROM users WHERE tg_id=?", (user["tg_id"],)).fetchone())
+        background.add_task(_sync_week, user["tg_id"])
+        if newcomer:   # just signed up: the bot offers the app for the phone
+            background.add_task(_offer_app, user["tg_id"])
         return _profile(conn, user)
+
+
+@app.post("/api/consent")
+def give_consent(user=Depends(current_user)):
+    """The consent of someone who signed up before it was asked for, or before a new edition of the policy."""
+    with db.session() as conn:
+        if not conn.execute("SELECT 1 FROM users WHERE tg_id=?", (user["tg_id"],)).fetchone():
+            raise HTTPException(400, "Сначала заполните профиль")
+        conn.execute("UPDATE users SET consent_at=?, consent_version=?, updated_at=datetime('now') WHERE tg_id=?",
+                     (datetime.now(timezone.utc).isoformat(timespec="seconds"), CONSENT_VERSION, user["tg_id"]))
+        return _profile(conn, dict(conn.execute("SELECT * FROM users WHERE tg_id=?", (user["tg_id"],)).fetchone()))
+
+
+@app.delete("/api/account")
+def delete_account(background: BackgroundTasks, user=Depends(current_user)):
+    """Withdrawing consent: the student and everything tied to them is erased at once, freed pages zeroed.
+    A club they own with other members in it must be handed over first; one they are alone in goes with them."""
+    me = user["tg_id"]
+    files = []
+    with db.session() as conn:
+        owned = conn.execute("SELECT c.id, c.name FROM club_members m JOIN clubs c ON c.id = m.club_id "
+                             "WHERE m.tg_id=? AND m.role='owner'", (me,)).fetchall()
+        crowded = [c["name"] for c in owned if _club_size(conn, c["id"]) > 1]
+        if crowded:
+            raise HTTPException(409, f"Вы владелец клуба «{crowded[0]}», в котором есть участники. "
+                                     "Сначала передайте права владельца другому участнику.")
+        week = conn.execute("SELECT week_msg FROM users WHERE tg_id=?", (me,)).fetchone()
+        conn.execute("PRAGMA secure_delete=ON")
+        for c in owned:
+            files += _erase_club(conn, c["id"])
+        for r in conn.execute("SELECT id, photo FROM club_posts WHERE author=?", (me,)).fetchall():
+            if r["photo"]:
+                files.append(POSTS / f"{r['photo']}.jpg")
+            _drop_post(conn, r["id"])
+        for sql in ("DELETE FROM post_comments WHERE author=?", "DELETE FROM post_reactions WHERE tg_id=?",
+                    "DELETE FROM club_members WHERE tg_id=?", "DELETE FROM club_requests WHERE tg_id=?",
+                    "DELETE FROM club_invites WHERE invitee=?1 OR inviter=?1",
+                    "DELETE FROM notifications WHERE tg_id=?1 OR actor=?1",
+                    "DELETE FROM friendships WHERE requester=?1 OR addressee=?1",
+                    "DELETE FROM flame_taps WHERE tapper=?1 OR friend=?1",
+                    "DELETE FROM reminders WHERE tg_id=?", "DELETE FROM open_buttons WHERE chat_id=?",
+                    "DELETE FROM devices WHERE tg_id=?", "DELETE FROM logins WHERE tg_id=?",
+                    "DELETE FROM install_links WHERE tg_id=?",
+                    "DELETE FROM users WHERE tg_id=?"):
+            conn.execute(sql, (me,))
+    with db.session() as conn:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    if user["avatar"]:
+        files.append(AVATARS / f"{user['avatar']}.jpg")
+    for f in files:
+        f.unlink(missing_ok=True)
+    if bot and week and week["week_msg"]:   # the pinned week leaves the bot's chat too
+        background.add_task(_retire_week_message, me, week["week_msg"])
+    return {"deleted": True}
 
 
 class NicknameIn(BaseModel):
@@ -350,7 +653,7 @@ class NicknameIn(BaseModel):
 
 
 @app.post("/api/profile/nickname")
-def save_nickname(body: NicknameIn, user=Depends(current_user)):
+def save_nickname(body: NicknameIn, user=Depends(consented_user)):
     """The name friends see, changeable any time; empty brings back the real name.
     The Telegram @tag is not stored as editable: it comes from Telegram on every request."""
     nick = " ".join("".join(ch for ch in body.nickname if ch.isprintable()).split())
@@ -368,7 +671,7 @@ class BioIn(BaseModel):
 
 
 @app.post("/api/profile/bio")
-def save_bio(body: BioIn, user=Depends(current_user)):
+def save_bio(body: BioIn, user=Depends(consented_user)):
     """A few words about yourself; empty removes them."""
     bio = _clean_about(body.bio)
     if len(bio) > BIO_MAX:
@@ -411,7 +714,7 @@ async def _save_photo(request: Request) -> str:
 
 
 @app.post("/api/profile/avatar")
-async def upload_avatar(request: Request, user=Depends(current_user)):
+async def upload_avatar(request: Request, user=Depends(consented_user)):
     """A photo of your own instead of the Telegram one; the body is the image itself."""
     token = await _save_photo(request)
     with db.session() as conn:
@@ -419,7 +722,7 @@ async def upload_avatar(request: Request, user=Depends(current_user)):
 
 
 @app.delete("/api/profile/avatar")
-def remove_avatar(user=Depends(current_user)):
+def remove_avatar(user=Depends(consented_user)):
     """Back to the Telegram photo."""
     with db.session() as conn:
         return _set_avatar(conn, user, None)
@@ -437,7 +740,7 @@ async def _refresh_group(group_id: int):
 
 
 @app.get("/api/schedule")
-async def schedule(start: date, end: date, user=Depends(current_user)):
+async def schedule(start: date, end: date, user=Depends(consented_user)):
     if not user["group_id"]:
         raise HTTPException(409, "Профиль не заполнен")
     return await _group_schedule(user["group_id"], start, end)
@@ -473,7 +776,7 @@ def _reminder_out(r):
 
 
 @app.get("/api/reminders")
-def list_reminders(user=Depends(current_user)):
+def list_reminders(user=Depends(consented_user)):
     with db.session() as conn:
         rows = conn.execute(
             "SELECT * FROM reminders WHERE tg_id=? AND sent_at IS NULL ORDER BY remind_at", (user["tg_id"],)
@@ -482,7 +785,7 @@ def list_reminders(user=Depends(current_user)):
 
 
 @app.post("/api/reminders")
-def add_reminder(body: ReminderIn, user=Depends(current_user)):
+def add_reminder(body: ReminderIn, user=Depends(consented_user)):
     if not user["group_id"]:
         raise HTTPException(409, "Профиль не заполнен")
     with db.session() as conn:
@@ -509,7 +812,7 @@ def add_reminder(body: ReminderIn, user=Depends(current_user)):
 
 
 @app.delete("/api/reminders/{rid}")
-def delete_reminder(rid: int, user=Depends(current_user)):
+def delete_reminder(rid: int, user=Depends(consented_user)):
     with db.session() as conn:
         conn.execute("DELETE FROM reminders WHERE id=? AND tg_id=?", (rid, user["tg_id"]))
     return {"ok": True}
@@ -520,6 +823,7 @@ class SettingsIn(BaseModel):
     remind_lead: int | None = None
     digest_time: str | None = None  # "HH:MM" from DIGEST_TIMES, or "off"
     show_club: bool | None = None
+    bot_week: bool | None = None
 
 
 def _calendar_url(conn, user) -> str:
@@ -538,6 +842,7 @@ def _settings(conn, user):
         "remind_lead": user["remind_lead"],
         "digest_time": user["digest_time"],
         "show_club": bool(user["show_club"]),
+        "bot_week": bool(user["bot_week"]),
         "calendar_url": _calendar_url(conn, user),
         "leads": list(LEADS),
         "digest_times": list(DIGEST_TIMES),
@@ -545,13 +850,13 @@ def _settings(conn, user):
 
 
 @app.get("/api/settings")
-def get_settings(user=Depends(current_user)):
+def get_settings(user=Depends(consented_user)):
     with db.session() as conn:
         return _settings(conn, user)
 
 
 @app.post("/api/settings")
-def save_settings(body: SettingsIn, user=Depends(current_user)):
+def save_settings(body: SettingsIn, background: BackgroundTasks, user=Depends(consented_user)):
     now = datetime.now(timezone.utc)
     with db.session() as conn:
         if body.remind_lead is not None:
@@ -577,11 +882,15 @@ def save_settings(body: SettingsIn, user=Depends(current_user)):
                 raise HTTPException(400, "Такого времени нет в списке")
         if body.show_club is not None:
             conn.execute("UPDATE users SET show_club=? WHERE tg_id=?", (int(body.show_club), user["tg_id"]))
+        if body.bot_week is not None:
+            conn.execute("UPDATE users SET bot_week=? WHERE tg_id=?", (int(body.bot_week), user["tg_id"]))
+            # after the answer: the pinned week arrives or leaves the chat
+            background.add_task(_sync_week if body.bot_week else _drop_week, user["tg_id"])
         return _settings(conn, user)
 
 
 @app.post("/api/refresh")
-async def refresh(user=Depends(current_user)):
+async def refresh(user=Depends(consented_user)):
     """Fetch the student's group from the site now, at most once a minute per group."""
     if not user["group_id"]:
         raise HTTPException(409, "Профиль не заполнен")
@@ -678,7 +987,7 @@ def _unread(conn, me: int) -> int:
 
 
 @app.get("/api/notifications")
-def notifications(user=Depends(current_user)):
+def notifications(user=Depends(consented_user)):
     """The newest 50, each with who did it and in which club."""
     me = user["tg_id"]
     with db.session() as conn:
@@ -695,14 +1004,14 @@ def notifications(user=Depends(current_user)):
 
 
 @app.get("/api/notifications/unread")
-def notifications_unread(user=Depends(current_user)):
+def notifications_unread(user=Depends(consented_user)):
     """Just the number for the red badge on the bell."""
     with db.session() as conn:
         return {"unread": _unread(conn, user["tg_id"])}
 
 
 @app.post("/api/notifications/read")
-def notifications_read(user=Depends(current_user)):
+def notifications_read(user=Depends(consented_user)):
     with db.session() as conn:
         conn.execute("UPDATE notifications SET read_at=datetime('now') WHERE tg_id=? AND read_at IS NULL", (user["tg_id"],))
     return {"unread": 0}
@@ -739,7 +1048,7 @@ def _card(conn, tg_id: int, with_now: bool = False):
     u = conn.execute(
         "SELECT u.*, g.name AS group_name, g.course AS group_course, f.name AS faculty, f.is_master "
         "FROM users u LEFT JOIN groups g ON g.id = u.group_id LEFT JOIN faculties f ON f.id = g.faculty_id "
-        "WHERE u.tg_id=?", (tg_id,)).fetchone()
+        "WHERE u.tg_id=? AND u.consent_at IS NOT NULL", (tg_id,)).fetchone()
     if not u:
         return None
     card = {"tg_id": u["tg_id"], "name": _display_name(u), "photo_url": _photo(u), "bio": u["bio"] or "",
@@ -790,7 +1099,7 @@ def _relation(conn, me: int, other: int) -> str:
 
 
 @app.get("/api/friends")
-def friends(user=Depends(current_user)):
+def friends(user=Depends(consented_user)):
     me = user["tg_id"]
     with db.session() as conn:
         mutual = [r["other"] for r in conn.execute(
@@ -809,13 +1118,14 @@ def friends(user=Depends(current_user)):
 
 
 @app.get("/api/users/find")
-def find_user(username: str, user=Depends(current_user)):
+def find_user(username: str, user=Depends(consented_user)):
     name = username.strip().lstrip("@").lower()
     if not 3 <= len(name) <= 32 or not all(ch.isalnum() or ch == "_" for ch in name):
         raise HTTPException(400, "Введите тег Telegram, например @ivan_petrov")
     with db.session() as conn:
         found = conn.execute(
             "SELECT tg_id FROM users WHERE lower(username)=? AND real_name IS NOT NULL AND group_id IS NOT NULL "
+            "AND consent_at IS NOT NULL "
             "ORDER BY updated_at DESC LIMIT 1", (name,)).fetchone()
         if not found:
             return {"user": None, "relation": None}
@@ -823,11 +1133,12 @@ def find_user(username: str, user=Depends(current_user)):
 
 
 @app.post("/api/friends/{other}")
-def add_friend(other: int, user=Depends(current_user)):
+def add_friend(other: int, user=Depends(consented_user)):
     """Send a request; if they already asked you, this accepts it."""
     me = user["tg_id"]
     with db.session() as conn:
-        if not conn.execute("SELECT 1 FROM users WHERE tg_id=? AND real_name IS NOT NULL", (other,)).fetchone():
+        if not conn.execute("SELECT 1 FROM users WHERE tg_id=? AND real_name IS NOT NULL AND consent_at IS NOT NULL",
+                            (other,)).fetchone():
             raise HTTPException(404, "Такого студента нет в приложении")
         rel = _relation(conn, me, other)
         if rel == "self":
@@ -842,7 +1153,7 @@ def add_friend(other: int, user=Depends(current_user)):
 
 
 @app.post("/api/friends/{other}/accept")
-def accept_friend(other: int, user=Depends(current_user)):
+def accept_friend(other: int, user=Depends(consented_user)):
     me = user["tg_id"]
     with db.session() as conn:
         n = conn.execute("UPDATE friendships SET status='accepted' WHERE requester=? AND addressee=? AND status='pending'",
@@ -854,7 +1165,7 @@ def accept_friend(other: int, user=Depends(current_user)):
 
 
 @app.delete("/api/friends/{other}")
-def remove_friend(other: int, user=Depends(current_user)):
+def remove_friend(other: int, user=Depends(consented_user)):
     """Decline a request, cancel your own, or remove a friend: the link goes in both directions."""
     me = user["tg_id"]
     with db.session() as conn:
@@ -866,7 +1177,7 @@ def remove_friend(other: int, user=Depends(current_user)):
 
 
 @app.post("/api/friends/{other}/flame")
-def press_flame(other: int, user=Depends(current_user)):
+def press_flame(other: int, user=Depends(consented_user)):
     """Press today's flame with a friend; pressing again the same day changes nothing."""
     me = user["tg_id"]
     with db.session() as conn:
@@ -882,7 +1193,7 @@ def press_flame(other: int, user=Depends(current_user)):
 
 
 @app.get("/api/friends/{other}/schedule")
-async def friend_schedule(other: int, start: date, end: date, user=Depends(current_user)):
+async def friend_schedule(other: int, start: date, end: date, user=Depends(consented_user)):
     with db.session() as conn:
         if _relation(conn, user["tg_id"], other) != "friend":
             raise HTTPException(403, "Расписание видно только друзьям")
@@ -1065,7 +1376,7 @@ def _club_fields(conn, body: ClubIn, club_id: int | None = None) -> dict:
 
 
 @app.get("/api/clubs")
-def clubs(user=Depends(current_user)):
+def clubs(user=Depends(consented_user)):
     """Your clubs, the invitations waiting for you, and the clubs you may join."""
     me = user["tg_id"]
     with db.session() as conn:
@@ -1092,13 +1403,13 @@ def clubs(user=Depends(current_user)):
 
 
 @app.get("/api/clubs/{club_id}")
-def club(club_id: int, user=Depends(current_user)):
+def club(club_id: int, user=Depends(consented_user)):
     with db.session() as conn:
         return _club_view(conn, _club_row(conn, club_id), user["tg_id"])
 
 
 @app.post("/api/clubs")
-def create_club(body: ClubIn, user=Depends(current_user)):
+def create_club(body: ClubIn, user=Depends(consented_user)):
     """Found a club and become its owner; a student owns at most CLUB_OWN_MAX clubs."""
     me = user["tg_id"]
     with db.session() as conn:
@@ -1115,7 +1426,7 @@ def create_club(body: ClubIn, user=Depends(current_user)):
 
 
 @app.post("/api/clubs/{club_id}/settings")
-def club_settings(club_id: int, body: ClubIn, user=Depends(current_user)):
+def club_settings(club_id: int, body: ClubIn, user=Depends(consented_user)):
     me = user["tg_id"]
     with db.session() as conn:
         _club_row(conn, club_id)
@@ -1136,7 +1447,7 @@ def _set_club_avatar(club_id: int, me: int, token: str | None):
 
 
 @app.post("/api/clubs/{club_id}/avatar")
-async def club_avatar(club_id: int, request: Request, user=Depends(current_user)):
+async def club_avatar(club_id: int, request: Request, user=Depends(consented_user)):
     with db.session() as conn:
         _club_row(conn, club_id)
         _require_role(conn, club_id, user["tg_id"], "owner", "admin")
@@ -1144,7 +1455,7 @@ async def club_avatar(club_id: int, request: Request, user=Depends(current_user)
 
 
 @app.delete("/api/clubs/{club_id}/avatar")
-def remove_club_avatar(club_id: int, user=Depends(current_user)):
+def remove_club_avatar(club_id: int, user=Depends(consented_user)):
     with db.session() as conn:
         _club_row(conn, club_id)
         _require_role(conn, club_id, user["tg_id"], "owner", "admin")
@@ -1152,7 +1463,7 @@ def remove_club_avatar(club_id: int, user=Depends(current_user)):
 
 
 @app.post("/api/clubs/{club_id}/join")
-def join_club(club_id: int, user=Depends(current_user)):
+def join_club(club_id: int, user=Depends(consented_user)):
     """Join an open club, or accept an invitation."""
     me = user["tg_id"]
     with db.session() as conn:
@@ -1169,7 +1480,7 @@ def join_club(club_id: int, user=Depends(current_user)):
 
 
 @app.post("/api/clubs/{club_id}/leave")
-def leave_club(club_id: int, user=Depends(current_user)):
+def leave_club(club_id: int, user=Depends(consented_user)):
     me = user["tg_id"]
     with db.session() as conn:
         _club_row(conn, club_id)
@@ -1181,7 +1492,7 @@ def leave_club(club_id: int, user=Depends(current_user)):
 
 
 @app.delete("/api/clubs/{club_id}")
-def delete_club(club_id: int, user=Depends(current_user)):
+def delete_club(club_id: int, user=Depends(consented_user)):
     """Only the owner, and only once nobody else is left: a club with members is handed over, not deleted."""
     with db.session() as conn:
         club = _club_row(conn, club_id)
@@ -1189,29 +1500,35 @@ def delete_club(club_id: int, user=Depends(current_user)):
         if _club_size(conn, club_id) > 1:
             raise HTTPException(400, "В клубе есть участники, поэтому удалить его нельзя. "
                                      "Можно передать права владельца другому участнику.")
-        photos = [r["photo"] for r in conn.execute("SELECT photo FROM club_posts WHERE club_id=? AND photo IS NOT NULL", (club_id,))]
-        for r in conn.execute("SELECT id FROM club_posts WHERE club_id=?", (club_id,)).fetchall():
-            _drop_post(conn, r["id"])
-        conn.execute("DELETE FROM club_invites WHERE club_id=?", (club_id,))
-        conn.execute("DELETE FROM club_requests WHERE club_id=?", (club_id,))
-        conn.execute("DELETE FROM notifications WHERE club_id=?", (club_id,))
-        conn.execute("DELETE FROM club_members WHERE club_id=?", (club_id,))
-        conn.execute("DELETE FROM clubs WHERE id=?", (club_id,))
-    for token in photos:
-        (POSTS / f"{token}.jpg").unlink(missing_ok=True)
-    if club["avatar"]:
-        (AVATARS / f"{club['avatar']}.jpg").unlink(missing_ok=True)
+        files = _erase_club(conn, club_id)
+    for f in files:
+        f.unlink(missing_ok=True)
     return {"deleted": True}
 
 
+def _erase_club(conn, club_id: int) -> list:
+    """Every row of a club; returns its photo files, to be removed once the rows are gone."""
+    club = _club_row(conn, club_id)
+    files = [POSTS / f"{r['photo']}.jpg" for r in conn.execute(
+        "SELECT photo FROM club_posts WHERE club_id=? AND photo IS NOT NULL", (club_id,))]
+    if club["avatar"]:
+        files.append(AVATARS / f"{club['avatar']}.jpg")
+    for r in conn.execute("SELECT id FROM club_posts WHERE club_id=?", (club_id,)).fetchall():
+        _drop_post(conn, r["id"])
+    for table in ("club_invites", "club_requests", "notifications", "club_members"):
+        conn.execute(f"DELETE FROM {table} WHERE club_id=?", (club_id,))
+    conn.execute("DELETE FROM clubs WHERE id=?", (club_id,))
+    return files
+
+
 @app.post("/api/clubs/{club_id}/invites/{other}")
-def invite_to_club(club_id: int, other: int, user=Depends(current_user)):
+def invite_to_club(club_id: int, other: int, user=Depends(consented_user)):
     me = user["tg_id"]
     with db.session() as conn:
         _club_row(conn, club_id)
         _require_role(conn, club_id, me, "owner", "admin")
-        if not conn.execute("SELECT 1 FROM users WHERE tg_id=? AND real_name IS NOT NULL AND group_id IS NOT NULL",
-                            (other,)).fetchone():
+        if not conn.execute("SELECT 1 FROM users WHERE tg_id=? AND real_name IS NOT NULL AND group_id IS NOT NULL "
+                            "AND consent_at IS NOT NULL", (other,)).fetchone():
             raise HTTPException(404, "Такого студента нет в приложении")
         if _member_role(conn, club_id, other):
             raise HTTPException(409, "Этот человек уже в клубе")
@@ -1222,7 +1539,7 @@ def invite_to_club(club_id: int, other: int, user=Depends(current_user)):
 
 
 @app.post("/api/clubs/{club_id}/request")
-def request_to_join(club_id: int, user=Depends(current_user)):
+def request_to_join(club_id: int, user=Depends(consented_user)):
     """Ask to join a club that takes members by request; its owner and admins hear about it."""
     me = user["tg_id"]
     with db.session() as conn:
@@ -1238,7 +1555,7 @@ def request_to_join(club_id: int, user=Depends(current_user)):
 
 
 @app.delete("/api/clubs/{club_id}/request")
-def cancel_request(club_id: int, user=Depends(current_user)):
+def cancel_request(club_id: int, user=Depends(consented_user)):
     me = user["tg_id"]
     with db.session() as conn:
         club = _club_row(conn, club_id)
@@ -1250,7 +1567,7 @@ def cancel_request(club_id: int, user=Depends(current_user)):
 
 
 @app.post("/api/clubs/{club_id}/requests/{other}/accept")
-def accept_request(club_id: int, other: int, user=Depends(current_user)):
+def accept_request(club_id: int, other: int, user=Depends(consented_user)):
     """The owner or an admin lets the student in."""
     me = user["tg_id"]
     with db.session() as conn:
@@ -1264,7 +1581,7 @@ def accept_request(club_id: int, other: int, user=Depends(current_user)):
 
 
 @app.delete("/api/clubs/{club_id}/requests/{other}")
-def decline_request(club_id: int, other: int, user=Depends(current_user)):
+def decline_request(club_id: int, other: int, user=Depends(consented_user)):
     me = user["tg_id"]
     with db.session() as conn:
         _require_role(conn, club_id, me, "owner", "admin")
@@ -1273,7 +1590,7 @@ def decline_request(club_id: int, other: int, user=Depends(current_user)):
 
 
 @app.delete("/api/clubs/{club_id}/invites/{other}")
-def drop_club_invite(club_id: int, other: int, user=Depends(current_user)):
+def drop_club_invite(club_id: int, other: int, user=Depends(consented_user)):
     """The invitee declines, or an owner or admin takes the invitation back."""
     me = user["tg_id"]
     with db.session() as conn:
@@ -1288,7 +1605,7 @@ class RoleIn(BaseModel):
 
 
 @app.post("/api/clubs/{club_id}/members/{other}/role")
-def set_club_role(club_id: int, other: int, body: RoleIn, user=Depends(current_user)):
+def set_club_role(club_id: int, other: int, body: RoleIn, user=Depends(consented_user)):
     """The owner makes a member an admin, or an admin a member again."""
     me = user["tg_id"]
     with db.session() as conn:
@@ -1304,7 +1621,7 @@ def set_club_role(club_id: int, other: int, body: RoleIn, user=Depends(current_u
 
 
 @app.get("/api/clubs/{club_id}/members/{other}/contact")
-def club_member_contact(club_id: int, other: int, user=Depends(current_user)):
+def club_member_contact(club_id: int, other: int, user=Depends(consented_user)):
     """The Telegram chat link of a fellow member, asked for only when "write" is pressed:
     the club's pages never carry anyone's @tag."""
     with db.session() as conn:
@@ -1317,7 +1634,7 @@ def club_member_contact(club_id: int, other: int, user=Depends(current_user)):
 
 
 @app.post("/api/clubs/{club_id}/transfer/{other}")
-def transfer_club(club_id: int, other: int, user=Depends(current_user)):
+def transfer_club(club_id: int, other: int, user=Depends(consented_user)):
     """Hand the club over: the member becomes the owner, the old owner stays on as an admin."""
     me = user["tg_id"]
     with db.session() as conn:
@@ -1334,7 +1651,7 @@ def transfer_club(club_id: int, other: int, user=Depends(current_user)):
 
 
 @app.delete("/api/clubs/{club_id}/members/{other}")
-def remove_club_member(club_id: int, other: int, user=Depends(current_user)):
+def remove_club_member(club_id: int, other: int, user=Depends(consented_user)):
     """The owner removes anyone else; an admin removes ordinary members."""
     me = user["tg_id"]
     with db.session() as conn:
@@ -1390,7 +1707,7 @@ def _drop_post(conn, post_id: int):
 
 
 @app.get("/api/clubs/{club_id}/posts")
-def club_posts(club_id: int, before: int | None = None, user=Depends(current_user)):
+def club_posts(club_id: int, before: int | None = None, user=Depends(consented_user)):
     """The newest posts first, a page at a time; older ones with ?before=<the last id you have>.
     Members read every post; a visitor who may open the club reads only the open ones."""
     me = user["tg_id"]
@@ -1418,7 +1735,7 @@ def _close_profane_open_posts():
 
 
 @app.get("/api/feed")
-def shared_feed(before: int | None = None, user=Depends(current_user)):
+def shared_feed(before: int | None = None, user=Depends(consented_user)):
     """The shared feed: open posts of every club this student may open, newest first, each with its club."""
     me = user["tg_id"]
     with db.session() as conn:
@@ -1455,7 +1772,7 @@ def _encode_post_photo(raw: bytes) -> bytes:
 
 
 @app.post("/api/clubs/{club_id}/posts")
-async def create_post(club_id: int, body: PostIn, user=Depends(current_user)):
+async def create_post(club_id: int, body: PostIn, user=Depends(consented_user)):
     """The owner and admins post text, a photo, or both."""
     me = user["tg_id"]
     with db.session() as conn:
@@ -1492,7 +1809,7 @@ async def create_post(club_id: int, body: PostIn, user=Depends(current_user)):
 
 
 @app.delete("/api/clubs/{club_id}/posts/{post_id}")
-def delete_post(club_id: int, post_id: int, user=Depends(current_user)):
+def delete_post(club_id: int, post_id: int, user=Depends(consented_user)):
     """The author, the owner or an admin."""
     me = user["tg_id"]
     with db.session() as conn:
@@ -1510,7 +1827,7 @@ class ReactionIn(BaseModel):
 
 
 @app.post("/api/clubs/{club_id}/posts/{post_id}/reaction")
-def react(club_id: int, post_id: int, body: ReactionIn, user=Depends(current_user)):
+def react(club_id: int, post_id: int, body: ReactionIn, user=Depends(consented_user)):
     """One reaction per member: a new one replaces the old, the same one again takes it back."""
     me = user["tg_id"]
     if body.emoji not in REACTIONS:
@@ -1533,7 +1850,7 @@ def _comment_card(conn, row, me: int, role: str | None):
 
 
 @app.get("/api/clubs/{club_id}/posts/{post_id}/comments")
-def comments(club_id: int, post_id: int, user=Depends(current_user)):
+def comments(club_id: int, post_id: int, user=Depends(consented_user)):
     """All of a post's comments, oldest first, like a chat. Visitors read those under open posts;
     writing stays with the members."""
     me = user["tg_id"]
@@ -1552,7 +1869,7 @@ class CommentIn(BaseModel):
 
 
 @app.post("/api/clubs/{club_id}/posts/{post_id}/comments")
-def add_comment(club_id: int, post_id: int, body: CommentIn, user=Depends(current_user)):
+def add_comment(club_id: int, post_id: int, body: CommentIn, user=Depends(consented_user)):
     """Every member may comment, unless the post was published with comments off."""
     me = user["tg_id"]
     with db.session() as conn:
@@ -1571,7 +1888,7 @@ def add_comment(club_id: int, post_id: int, body: CommentIn, user=Depends(curren
 
 
 @app.delete("/api/clubs/{club_id}/posts/{post_id}/comments/{comment_id}")
-def delete_comment(club_id: int, post_id: int, comment_id: int, user=Depends(current_user)):
+def delete_comment(club_id: int, post_id: int, comment_id: int, user=Depends(consented_user)):
     """The comment's author, the owner or an admin."""
     me = user["tg_id"]
     with db.session() as conn:
@@ -1585,8 +1902,218 @@ def delete_comment(club_id: int, post_id: int, comment_id: int, user=Depends(cur
     return {"deleted": True}
 
 
+# ---------- the app outside Telegram: sign-in through the bot, signed-in devices ----------
+# The app on a phone's home screen has no Telegram signature. It asks for a code (/api/login/start), the
+# student opens t.me/<bot>?start=login_<code> and confirms in the bot, and the app, which kept a secret that
+# never left it, trades code and secret for a long key of its own (/api/login/claim).
+
+def _fresh_login(conn, code: str):
+    return conn.execute("SELECT * FROM logins WHERE code=? AND created_at >= datetime('now', ?)",
+                        (code, f"-{LOGIN_MINUTES} minutes")).fetchone()
+
+
+@app.post("/api/login/start")
+def login_start(request: Request):
+    code, secret = secrets.token_urlsafe(16), secrets.token_urlsafe(32)
+    with db.session() as conn:
+        conn.execute("DELETE FROM logins WHERE created_at < datetime('now', ?)", (f"-{LOGIN_MINUTES} minutes",))
+        if conn.execute("SELECT count(*) FROM logins").fetchone()[0] >= LOGINS_MAX:
+            raise HTTPException(429, "Сейчас входит слишком много людей сразу, попробуйте через пару минут")
+        conn.execute("INSERT INTO logins(code, secret_hash, device) VALUES(?, ?, ?)",
+                     (code, _hash(secret), _device_name(request.headers.get("user-agent", ""))))
+    name = (bot.username if bot else None) or BOT_USERNAME
+    return {"code": code, "secret": secret, "link": f"https://t.me/{name}?start=login_{code}"}
+
+
+class ClaimIn(BaseModel):
+    code: str = Field(max_length=64)
+    secret: str = Field(max_length=128)
+
+
+@app.post("/api/login/claim")
+def login_claim(body: ClaimIn, request: Request):
+    """Pending until the student says yes in the bot; then the device's key, once."""
+    with db.session() as conn:
+        row = _fresh_login(conn, body.code)
+        if not row or not hmac.compare_digest(row["secret_hash"], _hash(body.secret)):
+            return {"status": "expired"}
+        if row["status"] == "denied":
+            conn.execute("DELETE FROM logins WHERE code=?", (body.code,))
+            return {"status": "denied"}
+        if row["status"] != "confirmed":
+            return {"status": "pending"}
+        key = secrets.token_urlsafe(32)
+        conn.execute("DELETE FROM logins WHERE code=?", (body.code,))
+        conn.execute("INSERT INTO devices(tg_id, key_hash, name) VALUES(?, ?, ?)",
+                     (row["tg_id"], _hash(key), row["device"] or _device_name(request.headers.get("user-agent", ""))))
+    return {"status": "ok", "key": key}
+
+
+def _login_ask(sender: dict, code: str):
+    """/start login_<code> in the bot: which device wants in, and a warning against links sent by others."""
+    with db.session() as conn:
+        row = _fresh_login(conn, code)
+        if not row or row["status"] not in ("pending", "asked"):
+            return "Эта ссылка для входа устарела. Нажмите «Войти через Telegram» в приложении ещё раз.", None
+        if not conn.execute("SELECT 1 FROM users WHERE tg_id=?", (sender.get("id"),)).fetchone():
+            return ("Сначала зарегистрируйтесь: нажмите «Расписание» внизу этого чата и заполните профиль. "
+                    "Потом снова нажмите «Войти через Telegram» в приложении на телефоне."), None
+        conn.execute("UPDATE logins SET tg_id=?, status='asked' WHERE code=?", (sender["id"], code))
+    return (f"Войти в приложение «Расписание» на устройстве «{row['device'] or 'новое устройство'}»?\n\n"
+            "Подтверждайте, только если сами нажали «Войти через Telegram» в приложении. Если ссылку прислал "
+            "кто-то другой, нажмите «Нет»: иначе он получит доступ к вашему аккаунту.",
+            {"inline_keyboard": [[{"text": "Да, это я", "callback_data": f"login:{code}:yes"},
+                                  {"text": "Нет", "callback_data": f"login:{code}:no"}]]})
+
+
+def _login_answer(sender: dict, code: str, yes: bool) -> str:
+    with db.session() as conn:
+        row = _fresh_login(conn, code)
+        if not row or row["status"] != "asked" or row["tg_id"] != sender.get("id"):
+            return "Эта ссылка для входа уже не действует."
+        conn.execute("UPDATE logins SET status=? WHERE code=?", ("confirmed" if yes else "denied", code))
+    if yes:
+        return f"Готово, вход на устройстве «{row['device'] or 'новое устройство'}» подтверждён. Вернитесь в приложение."
+    return "Вход отменён. Без вашего подтверждения войти в аккаунт нельзя."
+
+
+@app.post("/api/devices/handoff")
+def device_handoff(user=Depends(consented_user)):
+    """«Приложение на телефон» inside Telegram: the site in the phone's browser, already signed in.
+    The code and secret travel in the #fragment, which browsers never send to a server."""
+    with db.session() as conn:
+        fragment = _handoff(conn, user["tg_id"])
+    base = (bot.webapp_url if bot else "") or "http://localhost:8080"
+    return {"url": f"{base}/{fragment}"}
+
+
+def _handoff(conn, tg_id: int) -> str:
+    """A sign-in already confirmed for this student, as the #fragment the site signs in with."""
+    code, secret = secrets.token_urlsafe(16), secrets.token_urlsafe(32)
+    conn.execute("INSERT INTO logins(code, secret_hash, tg_id, status) VALUES(?, ?, ?, 'confirmed')",
+                  (code, _hash(secret), tg_id))
+    return f"#login={code}.{secret}"
+
+
+# ---------- the bot offers the app for the phone: after sign-up, and once to those who signed up earlier ----------
+
+async def _offer_app(tg_id: int, again: bool = False):
+    """«Скачать» opens the site in the phone's browser, signed in, where arrows show where to tap;
+    «Нет, не надо» takes the offer away. again: /app, sent whatever was answered before."""
+    if not bot or not bot.webapp_url:
+        return
+    with db.session() as conn:
+        if not again:
+            if conn.execute("SELECT 1 FROM devices WHERE tg_id=?", (tg_id,)).fetchone():
+                conn.execute("UPDATE users SET app_offer='installed' WHERE tg_id=? AND app_offer IS NULL", (tg_id,))
+                return
+            if not conn.execute("UPDATE users SET app_offer='sent' WHERE tg_id=? AND app_offer IS NULL "
+                                "AND consent_at IS NOT NULL", (tg_id,)).rowcount:
+                return   # offered before, or not signed up
+        token = secrets.token_urlsafe(24)
+        conn.execute("INSERT INTO install_links(token_hash, tg_id) VALUES(?, ?)", (_hash(token), tg_id))
+    try:
+        sent = await bot.call("sendMessage", chat_id=tg_id, text=APP_OFFER, reply_markup={"inline_keyboard": [[
+            {"text": "Скачать", "url": f"{bot.webapp_url}/install/{token}"},
+            {"text": "Нет, не надо", "callback_data": "app:no"}]]})
+    except Exception as e:
+        log.warning("app offer to %s: %s", tg_id, e)
+        return
+    with db.session() as conn:
+        conn.execute("UPDATE users SET app_offer_msg=? WHERE tg_id=?", (sent["message_id"], tg_id))
+
+
+async def _app_command(chat_id: int):
+    """/app: the offer again, with a fresh link."""
+    with db.session() as conn:
+        known = conn.execute("SELECT 1 FROM users WHERE tg_id=? AND consent_at IS NOT NULL", (chat_id,)).fetchone()
+    if not known:
+        await bot.call("sendMessage", chat_id=chat_id,
+                       text="Сначала откройте приложение кнопкой «Расписание» и заполните профиль, потом пришлю ссылку.")
+        return
+    await _offer_app(chat_id, again=True)
+
+
+def _app_declined(sender: dict) -> str:
+    with db.session() as conn:
+        conn.execute("UPDATE users SET app_offer='declined' WHERE tg_id=?", (sender.get("id"),))
+    return "Хорошо, не будем. Если передумаете, отправьте /app, и я пришлю ссылку снова."
+
+
+async def _retire_offer(tg_id: int, message_id: int):
+    """The used «Скачать» button leaves the chat: the link in it works only once."""
+    try:
+        await bot.call("editMessageText", chat_id=tg_id, message_id=message_id,
+                       text="Ссылка открыта в браузере. Если не получилось поставить приложение, отправьте /app, "
+                            "и я пришлю новую.")
+    except Exception:
+        pass   # deleted or too old to edit
+
+
+@app.get("/install/{token}")
+def install_link(token: str, background: BackgroundTasks):
+    """«Скачать» under the bot's offer: the site in the browser, signed in, with the steps to the home screen open."""
+    headers = {"Cache-Control": "no-store"}
+    with db.session() as conn:
+        row = conn.execute("SELECT l.tg_id, u.app_offer_msg FROM install_links l JOIN users u ON u.tg_id = l.tg_id "
+                           "WHERE l.token_hash=? AND l.created_at >= datetime('now', ?)",
+                           (_hash(token), f"-{INSTALL_LINK_HOURS} hours")).fetchone()
+        conn.execute("DELETE FROM install_links WHERE token_hash=?", (_hash(token),))
+        if not row:
+            return RedirectResponse("/#login=used", status_code=303, headers=headers)
+        fragment = _handoff(conn, row["tg_id"])
+        conn.execute("UPDATE users SET app_offer='opened', app_offer_msg=NULL WHERE tg_id=?", (row["tg_id"],))
+    if bot and row["app_offer_msg"]:
+        background.add_task(_retire_offer, row["tg_id"], row["app_offer_msg"])
+    return RedirectResponse(f"/{fragment}", status_code=303, headers=headers)
+
+
+@app.post("/api/app-offer")
+def app_offer(background: BackgroundTasks, user=Depends(consented_user)):
+    """Called as the Mini App opens: those who signed up before the offer existed get it once from the bot."""
+    background.add_task(_offer_app, user["tg_id"])
+    return {"ok": True}
+
+
+@app.get("/api/devices")
+def devices(user=Depends(consented_user), tg=Depends(current_tg_user)):
+    with db.session() as conn:
+        rows = conn.execute("SELECT id, name, created_at, seen_at FROM devices WHERE tg_id=? ORDER BY seen_at DESC",
+                            (user["tg_id"],)).fetchall()
+    return [{**dict(r), "current": r["id"] == tg.get("device_id")} for r in rows]
+
+
+@app.delete("/api/devices/current")
+def sign_out_here(tg=Depends(current_tg_user)):
+    """«Выйти на этом устройстве»: the key this device shows stops working."""
+    if tg.get("device_id"):
+        with db.session() as conn:
+            conn.execute("DELETE FROM devices WHERE id=?", (tg["device_id"],))
+    return {"signed_out": True}
+
+
+@app.delete("/api/devices/{device_id}")
+def sign_out_device(device_id: int, user=Depends(current_user)):
+    with db.session() as conn:
+        conn.execute("DELETE FROM devices WHERE id=? AND tg_id=?", (device_id, user["tg_id"]))
+    return {"signed_out": True}
+
+
+@app.get("/sw.js")
+def service_worker():
+    """The offline worker, stamped with the state of the app's files: after any change browsers see
+    a new worker, which fetches the new files and drops the old ones."""
+    stamp = hashlib.sha256()
+    for p in sorted((ROOT / "webapp").rglob("*")):
+        if p.is_file() and p.name != "sw.js":
+            st = p.stat()
+            stamp.update(f"{p.relative_to(ROOT)}:{st.st_size}:{st.st_mtime_ns};".encode())
+    code = (ROOT / "webapp" / "sw.js").read_text(encoding="utf-8").replace("__VERSION__", stamp.hexdigest()[:12])
+    return Response(code, media_type="text/javascript", headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/api/avatar")
-async def avatar(user=Depends(current_user)):
+async def avatar(user=Depends(consented_user)):
     """Profile photo through the bot, for clients whose initData has no photo_url."""
     if not bot:
         raise HTTPException(404)
@@ -1602,6 +2129,16 @@ async def avatar(user=Depends(current_user)):
         raise
     except Exception:
         raise HTTPException(404)
+
+
+@app.get("/privacy")
+def privacy_page():
+    return FileResponse(ROOT / "webapp" / "privacy.html")
+
+
+@app.get("/consent")
+def consent_page():
+    return FileResponse(ROOT / "webapp" / "consent.html")
 
 
 app.mount("/avatars", StaticFiles(directory=AVATARS), name="avatars")

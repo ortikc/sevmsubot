@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Как поставить «Расписание» на телефон</title>
+<!-- The source of the two video guides (guide-iphone.mp4, guide-android.mp4).
+     ?p=ios or ?p=android picks the phone; window.seek(t) draws the frame at t seconds, so every frame is exact.
+     Drawn at 360×640 and scaled ×1.5: the frames come out 540×960. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=block" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 540px; height: 960px; overflow: hidden; background: #000; }
+  body { font-family: "Inter", system-ui, sans-serif; color: #fff; -webkit-font-smoothing: antialiased; }
+  #stage { position: absolute; left: 0; top: 0; width: 360px; height: 640px; transform: scale(1.5); transform-origin: 0 0; overflow: hidden;
+           background: radial-gradient(120% 70% at 0% 0%, #0d1f3c 0%, #000 60%); }
+  .abs { position: absolute; }
+
+  /* captions */
+  .cap { position: absolute; left: 22px; right: 22px; top: 30px; display: flex; gap: 12px; align-items: flex-start; opacity: 0; }
+  .cap .n { flex: none; width: 32px; height: 32px; border-radius: 50%; background: #4da3ff; color: #000; display: grid; place-items: center; font-weight: 700; font-size: 16px; }
+  .cap .n.ok { background: #34c759; }
+  .cap p { font-size: 19px; line-height: 1.28; font-weight: 600; letter-spacing: -0.01em; }
+  .cap small { display: block; margin-top: 6px; font-size: 12.5px; line-height: 1.35; font-weight: 500; color: #9aa4b2; }
+
+  /* the phone */
+  .phone { position: absolute; left: 62px; top: 144px; width: 236px; height: 484px; border-radius: 38px; background: #1b1c1f;
+           box-shadow: 0 0 0 1.5px #34363b, 0 24px 60px rgba(0,0,0,.6); }
+  .screen { position: absolute; left: 6px; top: 6px; width: 224px; height: 472px; border-radius: 32px; overflow: hidden; background: #000; }
+  .layer { position: absolute; inset: 0; opacity: 0; }
+  .status { position: absolute; left: 0; right: 0; top: 0; height: 26px; display: flex; align-items: center; justify-content: space-between; padding: 6px 20px 0 22px; font-size: 11px; font-weight: 600; z-index: 5; }
+  .status .ic { display: flex; gap: 5px; align-items: center; }
+  .status svg { display: block; fill: #fff; }
+
+  /* the app in miniature */
+  .mini { position: absolute; left: 0; right: 0; top: 26px; padding: 10px 12px; }
+  .m-switch { display: flex; gap: 4px; padding: 3px; border-radius: 999px; background: #141518; width: max-content; font-size: 8.5px; font-weight: 600; }
+  .m-switch span { padding: 5px 9px; border-radius: 999px; color: #c9ced6; }
+  .m-switch span.on { background: #fff; color: #000; }
+  .m-title { margin-top: 12px; font-size: 14px; font-weight: 600; }
+  .m-sub { margin-top: 2px; font-size: 8.5px; color: #8b929c; }
+  .m-lead { margin-top: 10px; padding: 10px 11px; border-radius: 13px; background: #141518; box-shadow: inset 0 0 0 1px #4da3ff; }
+  .m-lead b { display: block; font-size: 11px; font-weight: 600; }
+  .m-lead i { display: block; margin-top: 2px; font-style: normal; font-size: 8px; color: #8b929c; }
+  .m-lead .row { display: flex; gap: 18px; margin-top: 8px; font-size: 8px; color: #8b929c; }
+  .m-lead .row b { font-size: 13px; margin-top: 1px; }
+  .m-pair { margin-top: 7px; padding: 8px 11px; border-radius: 11px; background: #141518; display: flex; gap: 10px; font-size: 9px; }
+  .m-pair span { color: #8b929c; width: 26px; flex: none; }
+  .m-tabbar { position: absolute; left: 22px; right: 22px; bottom: 12px; height: 30px; border-radius: 999px; background: #17181b; box-shadow: inset 0 0 0 1px #2a2c31; display: flex; align-items: center; padding: 3px; }
+  .m-tabbar span { flex: 1; height: 24px; border-radius: 999px; }
+  .m-tabbar span.on { background: #fff; }
+
+  /* iPhone: Safari */
+  .ios-bar { position: absolute; left: 8px; right: 8px; bottom: 14px; height: 36px; display: flex; gap: 6px; align-items: center; }
+  .glass { background: rgba(58,60,66,.86); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.12); backdrop-filter: blur(8px); }
+  .ios-round { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; font-size: 15px; font-weight: 600; }
+  .ios-url { flex: 1; height: 36px; border-radius: 999px; display: grid; place-items: center; font-size: 10.5px; font-weight: 500; }
+  .ios-menu { position: absolute; right: 10px; bottom: 56px; width: 150px; border-radius: 16px; overflow: hidden; transform-origin: 90% 100%; }
+  .ios-menu div { height: 31px; padding: 0 12px; display: flex; align-items: center; justify-content: space-between; font-size: 10px; }
+  .ios-menu div + div { border-top: .5px solid rgba(255,255,255,.1); }
+  .ios-menu svg { width: 12px; height: 12px; fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .sheet { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 22px 22px 0 0; background: #1c1c1f; overflow: hidden; }
+  .sh-head { display: flex; gap: 9px; align-items: center; padding: 14px 14px 10px; }
+  .sh-head img, .app-ic { width: 32px; height: 32px; border-radius: 8px; display: block; }
+  .sh-head b { display: block; font-size: 10px; font-weight: 600; }
+  .sh-head i { display: block; font-style: normal; font-size: 8.5px; color: #8b929c; }
+  .sh-people { display: flex; gap: 12px; padding: 4px 14px 12px; }
+  .sh-people span { width: 38px; height: 38px; border-radius: 50%; background: #2c2d32; }
+  .sh-people span:nth-child(2) { background: #3a4a63; } .sh-people span:nth-child(3) { background: #4b3b5c; } .sh-people span:nth-child(4) { background: #2f5148; }
+  .sh-list { margin: 0 10px; border-radius: 12px; background: #2a2b30; }
+  .sh-list div { height: 33px; padding: 0 12px; display: flex; align-items: center; justify-content: space-between; font-size: 10px; }
+  .sh-list div + div { border-top: .5px solid rgba(255,255,255,.08); }
+  .sh-list svg { width: 13px; height: 13px; fill: none; stroke: #fff; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .hl { position: absolute; inset: 0; background: rgba(255,255,255,.16); opacity: 0; pointer-events: none; }
+  .press { position: relative; }
+  .add-nav { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 16px 12px 12px; font-size: 9.5px; white-space: nowrap; }
+  .add-nav b { font-size: 10px; }
+  .add-nav .acc { color: #4da3ff; }
+  .add-nav .acc.strong { font-weight: 700; }
+  .add-card { margin: 4px 10px 0; padding: 12px; border-radius: 12px; background: #2a2b30; display: flex; gap: 11px; align-items: center; }
+  .add-card .app-ic { width: 46px; height: 46px; border-radius: 11px; }
+  .add-card b { display: block; font-size: 11px; font-weight: 500; padding-bottom: 6px; border-bottom: .5px solid rgba(255,255,255,.15); }
+  .add-card i { display: block; margin-top: 6px; font-style: normal; font-size: 8.5px; color: #8b929c; }
+  .add-row { margin: 12px 10px 0; padding: 0 12px; height: 36px; border-radius: 12px; background: #2a2b30; display: flex; align-items: center; justify-content: space-between; font-size: 10px; }
+  .toggle { width: 34px; height: 20px; border-radius: 999px; background: #34c759; position: relative; }
+  .toggle::after { content: ""; position: absolute; right: 2px; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; }
+  .add-note { margin: 8px 16px 0; font-size: 8px; line-height: 1.4; color: #8b929c; }
+
+  /* home screens */
+  .home { background: radial-gradient(90% 60% at 20% 10%, #24427a 0%, #0f1b33 55%, #070b14 100%); }
+  .home.android { background: radial-gradient(90% 60% at 80% 0%, #1f5c52 0%, #0d2622 55%, #050c0b 100%); }
+  .grid { position: absolute; left: 14px; right: 14px; top: 46px; display: grid; grid-template-columns: repeat(4, 1fr); row-gap: 16px; justify-items: center; }
+  .app { width: 42px; text-align: center; }
+  .app .ic { width: 42px; height: 42px; border-radius: 11px; display: grid; place-items: center; }
+  .android .app .ic { border-radius: 50%; }
+  .app .ic::after { content: ""; width: 16px; height: 16px; border-radius: 5px; background: rgba(255,255,255,.55); }
+  .app .lbl { margin: 5px auto 0; width: 26px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.28); }
+  .app.ours .ic { background: #000; box-shadow: inset 0 0 0 1px #3a3d44; }
+  .app.ours .ic::after { display: none; }
+  .app.ours .ic img { width: 100%; height: 100%; border-radius: inherit; display: block; }
+  .app.ours .name { margin-top: 4px; font-size: 7.5px; font-weight: 500; white-space: nowrap; margin-left: -10px; margin-right: -10px; }
+  .dock { position: absolute; left: 10px; right: 10px; bottom: 12px; height: 62px; border-radius: 22px; display: flex; justify-content: space-around; align-items: center; background: rgba(255,255,255,.12); }
+  .android .dock { background: transparent; }
+  .dock .ic { width: 42px; height: 42px; border-radius: 11px; }
+  .android .dock .ic { border-radius: 50%; }
+  .c1 { background: #3e7bfa; } .c2 { background: #34c759; } .c3 { background: #ff9f0a; } .c4 { background: #af52de; }
+  .c5 { background: #ff453a; } .c6 { background: #5ac8fa; } .c7 { background: #8e8e93; } .c8 { background: #ffd60a; }
+
+  /* Android: Chrome */
+  .chrome-bar { position: absolute; left: 0; right: 0; top: 26px; height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 10px; background: #1f2023; }
+  .chrome-url { flex: 1; height: 28px; border-radius: 999px; background: #303135; display: flex; align-items: center; padding: 0 12px; font-size: 10px; color: #e3e3e3; }
+  .chrome-dots { width: 18px; text-align: center; font-size: 15px; line-height: 1; font-weight: 700; }
+  .a-page { position: absolute; left: 0; right: 0; top: 66px; bottom: 0; overflow: hidden; }
+  .a-page .mini { top: 0; }
+  .a-card { position: absolute; left: 8px; right: 8px; bottom: 10px; padding: 14px; border-radius: 18px; background: #1c1c1f; box-shadow: 0 -10px 30px rgba(0,0,0,.6); }
+  .a-card b { display: block; font-size: 12px; font-weight: 600; }
+  .a-card p { margin-top: 4px; font-size: 8.5px; line-height: 1.4; color: #9aa1ab; }
+  .a-btn { margin-top: 12px; height: 34px; border-radius: 999px; background: #fff; color: #000; display: grid; place-items: center; font-size: 10.5px; font-weight: 700; }
+  .scrim { position: absolute; inset: 0; background: rgba(0,0,0,.6); }
+  .dialog { position: absolute; left: 16px; right: 16px; top: 150px; padding: 18px 16px 12px; border-radius: 24px; background: #2b2d31; }
+  .dialog .app-ic { width: 38px; height: 38px; border-radius: 50%; }
+  .dialog b { display: block; margin-top: 12px; font-size: 13.5px; font-weight: 500; }
+  .dialog p { margin-top: 6px; font-size: 9px; color: #b9bec6; }
+  .dialog .btns { display: flex; justify-content: flex-end; gap: 22px; margin-top: 18px; font-size: 10.5px; font-weight: 600; color: #a8c7fa; }
+  .dialog .btns span { padding: 6px 2px; }
+
+  /* the app opened from the icon, offline */
+  .open { background: #000; }
+  .offline { position: absolute; left: 50%; bottom: 52px; transform: translateX(-50%); padding: 5px 10px; border-radius: 999px; background: #26282d; color: #b4bac3; font-size: 8px; font-weight: 500; white-space: nowrap; }
+
+  /* the finger */
+  .tap { position: absolute; width: 0; height: 0; z-index: 20; }
+  .tap .dot { position: absolute; left: -13px; top: -13px; width: 26px; height: 26px; border-radius: 50%; background: rgba(255,255,255,.85); box-shadow: 0 0 0 4px rgba(77,163,255,.45); }
+  .tap .ring { position: absolute; left: -20px; top: -20px; width: 40px; height: 40px; border-radius: 50%; border: 2.5px solid #4da3ff; }
+  .fade { position: absolute; inset: 0; background: #000; opacity: 0; z-index: 50; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="caps"></div>
+  <div class="phone"><div class="screen" id="screen"></div></div>
+  <div class="fade" id="fade"></div>
+</div>
+
+<script>
+const P = new URLSearchParams(location.search).get("p") === "android" ? "android" : "ios";
+const ICON = "../webapp/icons/icon-192.png";
+const SIG = '<svg width="15" height="9" viewBox="0 0 15 9"><rect x="0" y="6" width="2.6" height="3" rx=".6"/><rect x="4" y="4" width="2.6" height="5" rx=".6"/><rect x="8" y="2" width="2.6" height="7" rx=".6"/><rect x="12" y="0" width="2.6" height="9" rx=".6"/></svg>';
+const WIFI = '<svg width="12" height="9" viewBox="0 0 12 9"><path d="M6 9 3.7 6.6a3.3 3.3 0 0 1 4.6 0Z"/><path d="M1.8 4.7a6 6 0 0 1 8.4 0l-1.1 1.1a4.4 4.4 0 0 0-6.2 0Z" opacity=".9"/><path d="M0 2.8a8.5 8.5 0 0 1 12 0l-1.1 1.1a7 7 0 0 0-9.8 0Z" opacity=".8"/></svg>';
+const BATT = '<svg width="21" height="10" viewBox="0 0 21 10"><rect x=".5" y=".5" width="17" height="9" rx="2.5" fill="none" stroke="#fff" opacity=".5"/><rect x="2" y="2" width="12" height="6" rx="1.3"/><rect x="18.6" y="3.3" width="1.6" height="3.4" rx=".8" opacity=".5"/></svg>';
+const PLANE = '<svg width="12" height="12" viewBox="0 0 24 24"><path d="M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5Z"/></svg>';
+const status = (offline) => `<div class="status"><span>9:41</span><span class="ic">${offline ? PLANE : SIG + WIFI}${BATT}</span></div>`;
+
+const mini = (extra = "") => `
+  <div class="mini">
+    <div class="m-switch"><span class="on">День</span><span>Неделя</span><span>Статистика</span></div>
+    <div class="m-title">Вторник, 27 октября</div>
+    <div class="m-sub">Сегодня · 4 пары · 9:00–16:05</div>
+    <div class="m-lead"><b>Математический анализ</b><i>Лекция</i>
+      <div class="row"><div>Аудитория<br><b>205</b></div><div>Время<br><b>9:00–10:30</b></div></div></div>
+    <div class="m-pair"><span>10:40</span>История России</div>
+    <div class="m-pair"><span>12:55</span>Английский язык</div>
+    <div class="m-pair"><span>14:35</span>Программирование</div>
+    ${extra}
+  </div>`;
+const homeGrid = (cls) => {
+  const colors = ["c1","c2","c3","c4","c5","c6","c7","c8","c3","c1","c6"];
+  let cells = colors.slice(0, 9).map((c) => `<div class="app"><div class="ic ${c}"></div><div class="lbl"></div></div>`).join("");
+  cells += `<div class="app ours" id="our-app"><div class="ic"><img src="${ICON}" alt=""></div><div class="name">Расписание</div></div>`;
+  return `<div class="layer home ${cls}" id="home">${status(false)}<div class="grid">${cells}</div>
+    <div class="dock"><div class="ic c2"></div><div class="ic c1"></div><div class="ic c6"></div><div class="ic c8"></div></div></div>`;
+};
+const opened = `<div class="layer open" id="open">${status(true)}${mini()}<div class="offline">Нет сети · данные от 9:30</div>
+  <div class="m-tabbar"><span class="on"></span><span></span><span></span></div></div>`;
+
+const SCENES = {
+  ios: {
+    length: 15,
+    html: `
+      <div class="layer" id="safari">${status(false)}${mini()}
+        <div class="ios-bar"><div class="ios-round glass">‹</div><div class="ios-url glass">sevstud.site</div><div class="ios-round glass" id="more" style="letter-spacing:1px">•••</div></div>
+        <div class="ios-menu glass" id="menu">
+          <div id="menu-share" class="press">Поделиться<svg viewBox="0 0 24 24"><path d="M12 3v12M7.5 7.5 12 3l4.5 4.5M6 11H5v10h14V11h-1"/></svg><span class="hl" id="hl-share"></span></div>
+          <div>В закладки<svg viewBox="0 0 24 24"><path d="M4 5c3-1 5.5-.8 8 1 2.5-1.8 5-2 8-1v14c-3-1-5.5-.8-8 1-2.5-1.8-5-2-8-1Z"/></svg></div>
+          <div>Новая вкладка<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></div>
+          <div>Найти на странице<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></svg></div>
+        </div>
+      </div>
+      <div class="layer" id="share-dim" style="background:rgba(0,0,0,.45)"></div>
+      <div class="sheet" id="share" style="top:96px">
+        <div class="sh-head"><img src="${ICON}" alt=""><div><b>Расписание МГУ Севастополь</b><i>sevstud.site</i></div></div>
+        <div class="sh-people"><span></span><span></span><span></span><span></span></div>
+        <div style="position:relative;height:260px;overflow:hidden">
+          <div id="share-list" style="position:absolute;left:0;right:0;top:0">
+            <div class="sh-list">
+              <div>Скопировать<svg viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M5 15V5h10"/></svg></div>
+              <div>Добавить в Избранное<svg viewBox="0 0 24 24"><path d="m12 4 2.5 5 5.5.8-4 3.9.9 5.5L12 16.6 7.1 19.2l.9-5.5-4-3.9 5.5-.8Z"/></svg></div>
+              <div>Добавить в Заметки<svg viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M9 9h6M9 13h6"/></svg></div>
+              <div>Найти на странице<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></svg></div>
+              <div id="row-home" class="press">На экран «Домой»<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M12 8v8M8 12h8"/></svg><span class="hl" id="hl-home"></span></div>
+              <div>Разметка<svg viewBox="0 0 24 24"><path d="M5 19 16 8l2 2L7 21H5Z"/></svg></div>
+              <div>Печать<svg viewBox="0 0 24 24"><path d="M7 9V4h10v5M6 17H4v-7h16v7h-2M7 14h10v6H7Z"/></svg></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="sheet" id="add" style="top:38px">
+        <div class="add-nav"><span class="acc">Отменить</span><b>На экран «Домой»</b><span class="acc strong" id="add-btn">Добавить</span></div>
+        <div class="add-card"><img class="app-ic" src="${ICON}" alt=""><div style="flex:1"><b>Расписание</b><i>https://sevstud.site/</i></div></div>
+        <div class="add-row">Открыть как веб-приложение<span class="toggle"></span></div>
+        <p class="add-note">Иконка появится на экране «Домой», приложение откроется отдельно от Safari.</p>
+      </div>
+      ${homeGrid("")}
+      ${opened}`,
+    caps: [
+      [0, 1.75, "1", "Нажмите «•••» справа от адреса внизу экрана", "Safari на iPhone"],
+      [1.75, 3.75, "2", "Выберите «Поделиться»"],
+      [3.75, 7.0, "3", "Пролистайте вниз и нажмите «На экран „Домой“»"],
+      [7.0, 9.75, "4", "Нажмите «Добавить»", "«Открыть как веб-приложение» оставьте включённым"],
+      [9.75, 11.9, "5", "Откройте иконку «Расписание»"],
+      [11.9, 15, "✓", "Готово! Расписание открывается даже без интернета"],
+    ],
+    taps: [[1.3, "#more"], [3.1, "#menu-share"], [6.15, "#row-home"], [9.05, "#add-btn"], [11.35, "#our-app .ic"]],
+    keys: {
+      "hl-share": [[3.05, { o: 0 }], [3.15, { o: 1 }]],
+      safari: [[0, { o: 1 }], [9.6, { o: 1 }], [9.8, { o: 0 }]],
+      menu: [[1.45, { o: 0, s: 0.86 }], [1.75, { o: 1, s: 1 }], [3.55, { o: 1, s: 1 }], [3.75, { o: 0, s: 0.96 }]],
+      "share-dim": [[3.6, { o: 0 }], [3.95, { o: 1 }], [9.6, { o: 1 }], [9.85, { o: 0 }]],
+      share: [[3.65, { y: 380, o: 1 }], [4.15, { y: 0 }], [7.0, { y: 0, o: 1 }], [7.25, { o: 0 }]],
+      "share-list": [[4.6, { y: 0 }], [5.5, { y: -96 }]],
+      "hl-home": [[5.95, { o: 0 }], [6.1, { o: 1 }], [6.55, { o: 1 }], [6.8, { o: 0 }]],
+      add: [[6.95, { y: 440, o: 1 }], [7.45, { y: 0 }], [9.45, { y: 0, o: 1 }], [9.8, { y: 440 }]],
+      home: [[9.55, { o: 0 }], [9.8, { o: 1 }], [12.4, { o: 1 }], [12.6, { o: 0 }]],
+      "our-app": [[10.15, { s: 0, o: 0 }], [10.5, { s: 1.12, o: 1 }], [10.7, { s: 1 }]],
+      open: [[11.6, { o: 0, s: 0.2 }], [12.05, { o: 1, s: 1 }]],
+      fade: [[14.55, { o: 0 }], [15, { o: 1 }]],
+    },
+  },
+  android: {
+    length: 12,
+    html: `
+      <div class="layer" id="chrome">${status(false)}
+        <div class="chrome-bar"><div class="chrome-url">sevstud.site</div><div class="chrome-dots">⋮</div></div>
+        <div class="a-page">${mini()}
+          <div class="a-card"><b>Расписание на главном экране</b><p>Пары, статистика и друзья будут видны даже без интернета.</p><div class="a-btn">Установить приложение</div></div>
+        </div>
+      </div>
+      <div class="layer" id="dialog-wrap"><div class="scrim"></div>
+        <div class="dialog"><img class="app-ic" src="${ICON}" alt=""><b>Установить приложение?</b><p>Расписание · sevstud.site</p>
+          <div class="btns"><span>Отмена</span><span id="install">Установить</span></div></div></div>
+      ${homeGrid("android")}
+      ${opened}`,
+    caps: [
+      [0, 3.0, "1", "Нажмите «Установить приложение»", "Нет кнопки? Меню ⋮ в Chrome → «Добавить на главный экран»"],
+      [3.0, 5.75, "2", "Подтвердите: «Установить»"],
+      [5.75, 8.5, "3", "Откройте иконку «Расписание» на главном экране"],
+      [8.5, 12, "✓", "Готово! Расписание открывается даже без интернета"],
+    ],
+    taps: [[1.9, ".a-btn"], [5.0, "#install"], [7.85, "#our-app .ic"]],
+    keys: {
+      chrome: [[0, { o: 1 }], [5.75, { o: 1 }], [5.95, { o: 0 }]],
+      "dialog-wrap": [[2.75, { o: 0, s: 0.94 }], [3.1, { o: 1, s: 1 }], [5.5, { o: 1 }], [5.8, { o: 0 }]],
+      home: [[5.7, { o: 0 }], [5.95, { o: 1 }], [8.9, { o: 1 }], [9.1, { o: 0 }]],
+      "our-app": [[6.3, { s: 0, o: 0 }], [6.65, { s: 1.12, o: 1 }], [6.85, { s: 1 }]],
+      open: [[8.1, { o: 0, s: 0.2 }], [8.55, { o: 1, s: 1 }]],
+      fade: [[11.55, { o: 0 }], [12, { o: 1 }]],
+    },
+  },
+};
+
+const S = SCENES[P];
+const screen = document.getElementById("screen");
+screen.innerHTML = S.html;
+document.getElementById("caps").innerHTML = S.caps.map(([a, b, n, text, small], i) =>
+  `<div class="cap" id="cap${i}"><span class="n ${n === "✓" ? "ok" : ""}">${n}</span><p>${text}${small ? `<small>${small}</small>` : ""}</p></div>`).join("");
+screen.insertAdjacentHTML("beforeend", S.taps.map((_, i) => `<div class="tap" id="tap${i}"><div class="ring"></div><div class="dot"></div></div>`).join(""));
+
+const clamp = (x) => Math.max(0, Math.min(1, x));
+const smooth = (x) => { x = clamp(x); return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; };
+const out = (x) => 1 - Math.pow(1 - clamp(x), 3);
+const DEF = { o: 1, x: 0, y: 0, s: 1 };
+
+/** the value of each property at t: held before the first key and after the last, eased in between */
+function at(frames, t) {
+  const v = { ...DEF };
+  const seen = {};
+  for (const [, p] of frames) for (const k in p) if (!(k in seen)) { seen[k] = true; v[k] = p[k]; }
+  for (let i = 0; i < frames.length; i++) {
+    const [ti, pi] = frames[i];
+    if (t >= ti) { Object.assign(v, pi); continue; }
+    const [tp, pp] = frames[i - 1] || [ti, pi];
+    const k = smooth((t - tp) / (ti - tp || 1));
+    for (const key in pi) {
+      const from = key in pp ? pp[key] : v[key];
+      v[key] = from + (pi[key] - from) * k;
+    }
+    break;
+  }
+  return v;
+}
+function apply(el, v) {
+  el.style.opacity = v.o;
+  el.style.transform = `translate(${v.x}px, ${v.y}px) scale(${v.s})`;
+}
+
+/** where a control is on the phone's screen right now, in the screen's own pixels (the stage is scaled ×1.5) */
+function centerOf(sel) {
+  const r = document.querySelector(sel).getBoundingClientRect(), s = screen.getBoundingClientRect();
+  return [(r.left + r.width / 2 - s.left) / 1.5, (r.top + r.height / 2 - s.top) / 1.5];
+}
+// the app grows out of its icon
+const iconAt = centerOf("#our-app .ic");
+document.getElementById("open").style.transformOrigin = `${iconAt[0]}px ${iconAt[1]}px`;
+
+window.seek = (t) => {
+  for (const [id, frames] of Object.entries(S.keys)) apply(document.getElementById(id), at(frames, t));
+  S.caps.forEach(([a, b], i) => {
+    const el = document.getElementById(`cap${i}`);
+    const o = Math.min(out((t - a) / 0.3), 1 - clamp((t - (b - 0.22)) / 0.22));
+    el.style.opacity = i === 0 && t < 0.3 ? 1 : o;   // the first caption is there from the very first frame, for the loop
+    el.style.transform = `translateY(${(1 - out((t - a) / 0.35)) * (i === 0 ? 0 : 10)}px)`;
+  });
+  S.taps.forEach(([tt, target], i) => {
+    const el = document.getElementById(`tap${i}`);
+    const [x, y] = centerOf(target);
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+    const dot = el.querySelector(".dot"), ring = el.querySelector(".ring");
+    const appear = out((t - (tt - 0.45)) / 0.25), leave = clamp((t - (tt + 0.25)) / 0.2);
+    dot.style.opacity = appear * (1 - leave);
+    dot.style.transform = `scale(${t < tt ? 1 - 0.15 * out((t - (tt - 0.12)) / 0.12) : 0.85 + 0.15 * out((t - tt) / 0.15)})`;
+    const r = (t - tt) / 0.5;
+    ring.style.opacity = r > 0 && r < 1 ? 1 - r : 0;
+    ring.style.transform = `scale(${0.6 + r * 1.1})`;
+  });
+};
+window.LENGTH = S.length;
+window.seek(0);
+document.fonts.ready.then(() => Promise.all([...document.images].map((im) => im.decode().catch(() => {})))).then(() => { window.ready = true; });
+</script>
+</body>
+</html>

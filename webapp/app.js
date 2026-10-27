@@ -2,6 +2,22 @@
 
 const tg = window.Telegram?.WebApp;
 const inTelegram = Boolean(tg?.initData);
+// outside Telegram (the app on a phone's home screen) the server knows us by a key this device got at sign-in
+const DEVICE_KEY = "msu.device";
+const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+function deviceKey() {
+  let key = "";
+  try { key = localStorage.getItem(DEVICE_KEY) || ""; } catch (_) {}
+  if (!key) {   // an iPhone copies the site's cookies, not its storage, into the app it puts on the home screen
+    key = decodeURIComponent((document.cookie.match(/(?:^|; )msu_device=([^;]*)/) || [])[1] || "");
+    if (key) try { localStorage.setItem(DEVICE_KEY, key); } catch (_) {}
+  }
+  return key;
+}
+function setDeviceKey(key) {
+  try { if (key) localStorage.setItem(DEVICE_KEY, key); else localStorage.removeItem(DEVICE_KEY); } catch (_) {}
+  document.cookie = `msu_device=${encodeURIComponent(key)}; path=/; max-age=${key ? 180 * 86400 : 0}; SameSite=Strict${location.protocol === "https:" ? "; Secure" : ""}`;
+}
 const app = document.getElementById("app");
 const tabbar = document.getElementById("tabbar");
 
@@ -36,6 +52,8 @@ const state = {
   ob: null,             // onboarding draft
   reminders: new Map(), // "date|start|subject" -> reminder
   liveSig: "",          // which pair the lead card shows, to know when to redraw
+  offline: null,        // with no network: when the data on screen was saved (ISO)
+  signingIn: false,     // the sign-in screen is up (outside Telegram, no device key yet)
 };
 
 /* ---------- time (Sevastopol lives on Moscow time) ---------- */
@@ -180,10 +198,23 @@ const markSvg = (name, cls = "mark") => `<svg class="${cls}" viewBox="0 0 24 24"
 class HttpError extends Error {
   constructor(status, msg) { super(msg); this.status = status; }
 }
+const OFFLINE_TEXT = "Нет интернета. Это заработает, когда появится сеть.";
+function authHeaders() {
+  if (inTelegram) return { "X-Init-Data": tg.initData };
+  const key = deviceKey();
+  return key ? { Authorization: `Bearer ${key}` } : {};
+}
 async function api(path, opts = {}) {
-  const headers = { "Content-Type": opts.body instanceof Blob ? opts.body.type || "application/octet-stream" : "application/json" };
-  if (inTelegram) headers["X-Init-Data"] = tg.initData;
+  const headers = { "Content-Type": opts.body instanceof Blob ? opts.body.type || "application/octet-stream" : "application/json", ...authHeaders() };
+  const write = Boolean(opts.method) && opts.method !== "GET";
+  if (write && !navigator.onLine) throw new HttpError(0, OFFLINE_TEXT);
   const res = await fetch(path, { ...opts, headers });
+  if (!write) noteSaved(res.headers.get("X-Saved-At"));
+  if (res.status === 401 && !inTelegram && deviceKey()) {
+    // signed out on another device, or the key is gone from the server
+    await forgetDevice();
+    renderSignIn("Вход на этом устройстве закончился. Войдите снова.");
+  }
   if (!res.ok) {
     let msg = res.statusText;
     try { msg = (await res.json()).detail || msg; } catch (_) {}
@@ -246,9 +277,9 @@ function setBack(fn) {
 let avatarUrl = null;
 async function resolveAvatar(me) {
   if (me.photo_url) { avatarUrl = me.photo_url; return; }
-  if (!inTelegram) return;
+  if (!inTelegram && !deviceKey()) return;
   try {
-    const res = await fetch("/api/avatar", { headers: { "X-Init-Data": tg.initData } });
+    const res = await fetch("/api/avatar", { headers: authHeaders() });
     if (res.ok) avatarUrl = URL.createObjectURL(await res.blob());
   } catch (_) {}
 }
@@ -425,6 +456,426 @@ function renderError(err, retry) {
   document.getElementById("retry")?.addEventListener("click", retry);
 }
 
+/* ---------- the app outside Telegram: on a phone's home screen, signed in through the bot, working offline ----------
+   Telegram cannot open the Mini App without the internet, so the offline app lives on the home screen.
+   It signs in through the bot: a code in the t.me link, the student's "yes" there, and a key for this device. */
+
+const DEV_HOSTS = ["localhost", "127.0.0.1"];   // python run.py --local: no worker, so every edit shows at once
+function registerWorker() {
+  if (!("serviceWorker" in navigator) || DEV_HOSTS.includes(location.hostname)) return;
+  navigator.serviceWorker.register("/sw.js").catch(() => {});
+}
+
+// with no network the worker answers from its saved copy and marks the answer with X-Saved-At
+const offlinePill = Object.assign(document.createElement("div"), { className: "offline-pill", hidden: true });
+offlinePill.setAttribute("role", "status");
+document.body.append(offlinePill);
+const savedText = (iso) => new Date(iso).toLocaleString("ru-RU",
+  { timeZone: "Europe/Moscow", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+function noteSaved(savedAt) {
+  const was = state.offline;
+  state.offline = savedAt ? (was && was < savedAt ? was : savedAt) : null;   // the oldest data on screen
+  if (state.offline === was) return;
+  offlinePill.hidden = !state.offline;
+  offlinePill.textContent = state.offline ? `Нет сети · данные от ${savedText(state.offline)}` : "";
+}
+// back online: fresh pairs and people instead of the saved ones
+addEventListener("online", async () => {
+  if (!state.offline || !state.me?.consent || state.ob || state.signingIn) return;
+  state.loadedWeeks.clear();
+  try { await loadWeek(state.weekStart || mondayOf(now().iso)); } catch (_) { return; }
+  if (state.tab === "schedule") renderSchedule();
+  loadFriends();
+  loadClubs();
+  loadUnread();
+});
+
+/** saves what the app may need without the internet: four weeks of pairs (as far as the statistics go)
+    and each friend's week. The worker keeps every answer; inside Telegram nothing is saved. */
+async function warmOffline() {
+  if (inTelegram || !deviceKey() || !navigator.onLine) return;
+  const monday = mondayOf(now().iso);
+  for (let i = 0; i < 4; i++) await loadWeek(addDays(monday, i * 7)).catch(() => {});
+  api("/api/settings").catch(() => {});
+  const friends = state.friends?.friends || (await api("/api/friends").catch(() => null))?.friends || [];
+  for (const f of friends) await api(`/api/friends/${f.tg_id}/schedule?start=${monday}&end=${addDays(monday, 6)}`).catch(() => {});
+}
+
+/* ---------- putting the app on the home screen: offered at the first launch in Telegram, and in the browser
+   shown step by step for this very phone, with an arrow at the browser's own button ---------- */
+
+let installPrompt = null;   // the browser's own install dialog (Chrome and its kin), held for our button
+addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installPrompt = e; refreshInstall(); });
+addEventListener("appinstalled", () => { installPrompt = null; refreshInstall(); });
+const UA = navigator.userAgent;
+const isIOS = /iPhone|iPad|iPod/.test(UA) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const isAndroid = /Android/.test(UA);
+// a browser inside another app (Telegram's own, VK, Instagram) cannot put a site on the home screen
+const inOtherApp = !inTelegram && ((isIOS && !/Safari\//.test(UA)) || /Telegram|; wv\)|FBAN|FBAV|Instagram|VKClient/.test(UA));
+const tgPhone = () => (/^android/.test(tg?.platform || "") ? "android" : tg?.platform === "ios" ? "ios" : null);
+
+/** how this browser puts a site on the home screen; null when the app is there already, or in Telegram */
+function installKind() {
+  if (standalone || inTelegram) return null;
+  if (inOtherApp) return isIOS ? "ios-app" : "android-app";
+  if (isIOS) return "ios";
+  if (installPrompt) return "button";
+  return isAndroid ? "android" : null;
+}
+const IOS_STEPS = [
+  "Нажмите <b>«•••»</b> справа от адреса внизу экрана. Если адрес вверху, нажмите значок <b>«Поделиться»</b>.",
+  "Выберите <b>«Поделиться»</b>, пролистайте вниз и нажмите <b>«На экран „Домой“»</b>.",
+  "Нажмите <b>«Добавить»</b> и откройте иконку «Расписание». Если попросит войти, нажмите «Войти через Telegram».",
+];
+const ANDROID_STEPS = [
+  "Нажмите меню <b>⋮</b> в правом верхнем углу браузера.",
+  "Выберите <b>«Установить приложение»</b> или <b>«Добавить на главный экран»</b>.",
+  "Подтвердите: <b>«Установить»</b>. Иконка «Расписание» появится на главном экране.",
+];
+const INSTALL_STEPS = {
+  ios: IOS_STEPS,
+  "ios-app": ["Ссылка открылась внутри другого приложения, отсюда её не поставить. Откройте её в <b>Safari</b>: «Открыть в Safari» в меню этого окна или скопируйте ссылку кнопкой ниже.", ...IOS_STEPS],
+  button: ["Нажмите <b>«Установить приложение»</b> ниже.", "Подтвердите: <b>«Установить»</b>. Иконка «Расписание» появится на главном экране."],
+  android: ANDROID_STEPS,
+  "android-app": ["Ссылка открылась внутри другого приложения. Откройте её в <b>Chrome</b>: меню <b>⋮</b> → «Открыть в Chrome» или скопируйте ссылку кнопкой ниже.", ...ANDROID_STEPS],
+};
+const stepsList = (steps) => `<ol class="install-steps">${steps.map((s) => `<li>${s}</li>`).join("")}</ol>`;
+function installBlock(kind) {
+  if (!kind) return "";
+  const action = kind === "button" ? `<button class="btn" data-install-go>Установить приложение</button>`
+    : kind.endsWith("-app") ? `<button class="btn secondary" data-copy-link>Скопировать ссылку</button><p class="btn-note" data-copy-note aria-live="polite"></p>`
+    : "";
+  return stepsList(INSTALL_STEPS[kind]) + action;
+}
+function bindInstall(root) {
+  root.querySelectorAll("[data-install-go]").forEach((b) => b.addEventListener("click", async () => {
+    if (!installPrompt) return;
+    haptic();
+    installPrompt.prompt();
+    await installPrompt.userChoice.catch(() => null);
+    installPrompt = null;
+    refreshInstall();
+  }));
+  root.querySelectorAll("[data-copy-link]").forEach((b) => b.addEventListener("click", async () => {
+    const ok = await copyText(location.href);
+    const note = root.querySelector("[data-copy-note]");
+    if (note) note.textContent = ok ? "Ссылка скопирована. Вставьте её в адресную строку браузера." : "Не получилось скопировать, выделите адрес вручную.";
+    haptic(ok ? "success" : "error");
+  }));
+}
+/** Chrome may offer its install dialog a moment after the page opens: redraw what depends on it */
+function refreshInstall() {
+  document.querySelectorAll("[data-install]").forEach((el) => { el.innerHTML = installBlock(installKind()); bindInstall(el); });
+  if (document.querySelector(".install-pointer")) showPointer(installKind());
+}
+
+// the arrow at the browser's own button: Safari's «•••» at the bottom right, Chrome's ⋮ at the top right
+const POINTER = { ios: "down", android: "up", "android-app": "up" };
+function showPointer(kind) {
+  hidePointer();
+  if (!POINTER[kind]) return;
+  const el = document.createElement("div");
+  el.className = `install-pointer ${POINTER[kind]}`;
+  el.setAttribute("aria-hidden", "true");
+  el.innerHTML = svg('<path d="M12 4v15M6 13l6 6 6-6"/>');
+  document.body.append(el);
+}
+function hidePointer() {
+  document.querySelector(".install-pointer")?.remove();
+}
+
+const GUIDE_KEY = "msu.installGuide";   // this browser has shown the guide by itself once
+function openInstallGuide() {
+  const kind = installKind();
+  if (!kind) return;
+  try { localStorage.setItem(GUIDE_KEY, "1"); } catch (_) {}
+  haptic();
+  openSheet(`
+    <div class="sheet-head"><div>
+      <h2 id="sheet-title">Поставьте расписание на главный экран</h2>
+      <p>Иконка на телефоне: пары, статистика и друзья открываются даже без интернета.</p>
+    </div></div>
+    <div data-install>${installBlock(kind)}</div>
+    <button class="btn-text" data-close>Позже</button>
+    ${POINTER[kind] === "down" ? `<div class="pointer-room"></div>` : ""}`, (panel) => bindInstall(panel));
+  showPointer(kind);
+}
+/** in a phone's browser the guide opens by itself: after the link from Telegram, and once on a first visit */
+function maybeShowGuide(fromTelegram) {
+  if (!installKind() || !(isIOS || isAndroid)) return;
+  let shown = false;
+  try { shown = Boolean(localStorage.getItem(GUIDE_KEY)); } catch (_) {}
+  if (fromTelegram || !shown) setTimeout(() => { if (sheet.hidden && !state.signingIn) openInstallGuide(); }, 700);
+}
+
+/** a link from Telegram that opened inside another app's browser: the sign-in in it waits for Safari or Chrome */
+function renderOpenOutside() {
+  showTabbar(false);
+  const where = isIOS ? "Safari" : "Chrome";
+  app.innerHTML = `
+    <section class="ob signin">
+      <img class="signin-mark" src="icons/icon-192.png" alt="">
+      <h1>Откройте ссылку в ${where}</h1>
+      <p class="lead">Она открылась внутри другого приложения, а на главный экран «Расписание» ставится только из ${isIOS ? "Safari" : "браузера"}. Вход уже готов: он сработает там.</p>
+      <div class="grow"></div>
+      ${stepsList([isIOS
+        ? "Нажмите <b>«Открыть в Safari»</b>: значок компаса или пункт в меню этого окна."
+        : "Нажмите меню <b>⋮</b> и выберите <b>«Открыть в Chrome»</b> или «Открыть в браузере».",
+        `Не получается? Скопируйте ссылку и вставьте её в адресную строку ${where}. Она работает 10 минут и входит в ваш аккаунт, никому её не пересылайте.`])}
+      <button class="btn" data-copy-link>Скопировать ссылку</button>
+      <p class="btn-note" data-copy-note aria-live="polite"></p>
+    </section>`;
+  bindInstall(app);
+  showPointer(isIOS ? "" : "android-app");
+}
+
+/* the offer of the app for the phone comes from the bot, with «Скачать» and «Нет, не надо»: right after
+   sign-up, and once to those who signed up before it existed. The server sends it, once per student */
+function offerInstall() {
+  if (inTelegram) api("/api/app-offer", { method: "POST" }).catch(() => {});
+}
+
+/** settings in Telegram: the site opens in the phone's browser already signed in, and these are the steps there */
+async function openPhoneOffer() {
+  haptic();
+  const phone = tgPhone();
+  const steps = phone === "ios"
+    ? ["Нажмите <b>«Открыть в браузере»</b>: откроется сайт приложения, вход уже будет выполнен. Если он открылся внутри Telegram, перейдите в <b>Safari</b>.",
+      "Внизу нажмите <b>«•••»</b> → <b>«Поделиться»</b> → <b>«На экран „Домой“»</b> → <b>«Добавить»</b>.",
+      "Готово: иконка «Расписание» на экране «Домой»."]
+    : phone === "android"
+    ? ["Нажмите <b>«Открыть в браузере»</b>: откроется сайт приложения, вход уже будет выполнен.",
+      "Нажмите <b>«Установить приложение»</b> и подтвердите. Если кнопки нет: меню <b>⋮</b> → «Добавить на главный экран».",
+      "Готово: иконка «Расписание» на главном экране."]
+    : ["Нажмите <b>«Открыть в браузере»</b> на телефоне, затем добавьте сайт на главный экран: в Safari через «Поделиться», в Chrome через «Установить приложение»."];
+  const draw = (action) => openSheet(`
+    <div class="sheet-head" id="phone-offer"><div>
+      <h2 id="sheet-title">Расписание на главном экране</h2>
+      <p>Поставьте приложение на телефон: пары, статистика и друзья будут открываться даже без интернета. Это займёт полминуты.</p>
+    </div></div>
+    ${stepsList(steps)}
+    <div class="sheet-actions">${action}</div>
+    <button class="btn-text" data-close>Позже</button>`, (panel) => {
+    const b = panel.querySelector("#phone-open");
+    b?.addEventListener("click", () => {
+      haptic();
+      tg.openLink(b.dataset.url);   // within the tap: Telegram opens links only in answer to one
+      b.disabled = true;
+      b.textContent = "Открыли в браузере";
+    });
+  });
+  draw(`<button class="btn" disabled>Готовим ссылку…</button>`);
+  let url;
+  try {
+    ({ url } = await api("/api/devices/handoff", { method: "POST" }));
+  } catch (e) {
+    if (document.getElementById("phone-offer")) draw(`<p class="note">${esc(errText(e))}</p>`);
+    return;
+  }
+  if (!document.getElementById("phone-offer") || sheet.hidden) return;   // closed meanwhile
+  draw(`<button class="btn" id="phone-open" data-url="${esc(url)}">Открыть в браузере</button>
+    <p class="btn-note">Ссылка входит в ваш аккаунт: она работает один раз и 10 минут, никому её не пересылайте.</p>`);
+}
+
+let signIn = null;        // the sign-in waiting for a "yes" in the bot: { code, secret, link, at, waiting }
+let signInTimer = null;
+const SIGN_IN_FRESH = 9 * 60 * 1000;   // the server keeps a code for 10 minutes
+
+function renderSignIn(note = "") {
+  state.signingIn = true;
+  clearInterval(liveTimer);
+  liveTimer = null;
+  closeSheet(true);
+  showTabbar(false);
+  setBack(null);
+  window.scrollTo(0, 0);
+  app.innerHTML = `
+    <section class="ob signin">
+      <img class="signin-mark" src="icons/icon-192.png" alt="">
+      <h1>Расписание МГУ Севастополь</h1>
+      <p class="lead">Войдите через Telegram: увидите свои пары, друзей и клубы, а расписание будет открываться даже без интернета.</p>
+      <div class="grow"></div>
+      <p class="note" id="signin-note" ${note ? "" : "hidden"}>${esc(note)}</p>
+      <a class="btn" id="signin-go" href="#" target="_blank" rel="noopener" aria-disabled="true">Войти через Telegram</a>
+      <p class="btn-note" id="signin-wait" aria-live="polite"></p>
+      ${installKind() ? `<div class="signin-install"><h2 class="group-label">Как поставить на главный экран</h2><div data-install>${installBlock(installKind())}</div></div>` : ""}
+      <p class="signin-foot">Ещё нет аккаунта? Откройте бота @sevmsubot в Telegram, нажмите «Расписание» и заполните профиль.</p>
+      ${POINTER[installKind()] === "down" ? `<div class="pointer-room"></div>` : ""}
+    </section>`;
+  bindInstall(app);
+  showPointer(installKind());
+  document.getElementById("signin-go").addEventListener("click", (e) => {
+    if (!signIn || Date.now() - signIn.at > SIGN_IN_FRESH) {
+      e.preventDefault();
+      if (signIn) { signInNote("Ссылка для входа обновилась, нажмите ещё раз."); newSignIn(); }
+      return;
+    }
+    haptic();
+    signIn.waiting = true;
+    document.getElementById("signin-wait").textContent = "Подтвердите вход в боте и вернитесь сюда.";
+    clearTimeout(signInTimer);
+    signInTimer = setTimeout(pollSignIn, 2000);
+  });
+  newSignIn();
+}
+function signInNote(text) {
+  const el = document.getElementById("signin-note");
+  if (!el) return;
+  el.textContent = text;
+  el.hidden = !text;
+}
+
+async function newSignIn() {
+  const go = document.getElementById("signin-go");
+  signIn = null;
+  go?.setAttribute("aria-disabled", "true");
+  try {
+    const r = await api("/api/login/start", { method: "POST" });
+    signIn = { ...r, at: Date.now(), waiting: false };
+    if (go?.isConnected) { go.href = r.link; go.removeAttribute("aria-disabled"); }
+  } catch (e) {
+    signInNote(errText(e, "Не получилось связаться с сервером. Проверьте интернет и откройте приложение ещё раз."));
+  }
+}
+
+/** after the tap, ask every 2 seconds (and on coming back from Telegram) whether the bot got a "yes" */
+async function pollSignIn() {
+  clearTimeout(signInTimer);
+  if (!state.signingIn || !signIn?.waiting) return;
+  const wait = document.getElementById("signin-wait");
+  let r;
+  try {
+    r = await api("/api/login/claim", { method: "POST", body: JSON.stringify({ code: signIn.code, secret: signIn.secret }) });
+  } catch (_) {
+    r = { status: "pending" };   // no network for a moment: ask again
+  }
+  if (r.status === "ok") return signedIn(r.key);
+  if (r.status !== "pending" || Date.now() - signIn.at > SIGN_IN_FRESH) {
+    signInNote(r.status === "denied" ? "Вход отменён в боте." : "Ссылка для входа устарела. Нажмите «Войти через Telegram» ещё раз.");
+    if (wait) wait.textContent = "";
+    return newSignIn();
+  }
+  if (document.visibilityState === "visible") signInTimer = setTimeout(pollSignIn, 2000);
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && state.signingIn && signIn?.waiting) pollSignIn();
+});
+
+async function signedIn(key) {
+  clearTimeout(signInTimer);
+  signIn = null;
+  await forgetDevice();   // nothing saved under another account may show
+  setDeviceKey(key);
+  location.replace("/");
+}
+
+/** the key and everything saved for offline leave this device */
+async function forgetDevice() {
+  setDeviceKey("");
+  try { await Promise.all(["data", "files"].map((c) => window.caches?.delete(c))); } catch (_) {}
+}
+
+/** «Приложение на телефон» in Telegram opens the site with #login=<code>.<secret>: sign in with it at once.
+    null without such a link; { ok } or { note } with one */
+async function takeHandoff() {
+  if (location.hash === "#login=used") {   // the bot's «Скачать» link, opened a second time or after a day
+    history.replaceState(null, "", location.pathname + location.search);
+    return { note: "Эта ссылка из бота уже использована. Отправьте боту /app, и он пришлёт новую, или войдите через Telegram." };
+  }
+  const m = location.hash.match(/^#login=([\w-]+)\.([\w-]+)$/);
+  if (!m) return null;
+  history.replaceState(null, "", location.pathname + location.search);
+  try {
+    const r = await api("/api/login/claim", { method: "POST", body: JSON.stringify({ code: m[1], secret: m[2] }) });
+    if (r.status === "ok") {
+      await forgetDevice();
+      setDeviceKey(r.key);
+      return { ok: true };
+    }
+  } catch (_) {}
+  return { note: "Ссылка для входа устарела или уже использована. Войдите через Telegram." };
+}
+
+async function signOutHere() {
+  haptic();
+  try { await api("/api/devices/current", { method: "DELETE" }); } catch (_) {}
+  await forgetDevice();
+  location.replace("/");
+}
+
+/** settings: the app on the phone, the devices signed in outside Telegram, signing out here */
+function phoneSection() {
+  const install = inTelegram || installKind()
+    ? `<li><button id="phone-app"><span>${inTelegram ? "Установить на телефон" : "Установить на этот телефон"}<small>Иконка на главном экране, расписание и без интернета</small></span>${icon.right}</button></li>`
+    : "";
+  const out = !inTelegram && deviceKey()
+    ? `<li><button class="danger" id="sign-out"><span>Выйти на этом устройстве<small>Сохранённые расписание и друзья сотрутся с телефона</small></span></button></li>`
+    : "";
+  return `
+    <h2 class="group-label">Приложение на телефоне</h2>
+    <ul class="options">
+      ${install}
+      <li><button id="open-devices"><span>Устройства<small>Где выполнен вход вне Telegram</small></span>${icon.right}</button></li>
+      ${out}
+    </ul>`;
+}
+function bindPhoneSection() {
+  document.getElementById("phone-app")?.addEventListener("click", inTelegram ? openPhoneOffer : openInstallGuide);
+  document.getElementById("open-devices")?.addEventListener("click", openDevicesSheet);
+  const out = document.getElementById("sign-out");
+  out?.addEventListener("click", () => {
+    if (!out.dataset.sure) {
+      haptic();
+      out.dataset.sure = "1";
+      out.querySelector("span").firstChild.textContent = "Точно выйти? Нажмите ещё раз";
+      return;
+    }
+    signOutHere();
+  });
+}
+
+async function openDevicesSheet() {
+  haptic();
+  const head = `
+    <div class="sheet-head"><div>
+      <h2 id="sheet-title">Устройства</h2>
+      <p>Где вы вошли в приложение вне Telegram. Если устройство чужое или потерялось, выйдите на нём отсюда.</p>
+    </div></div>`;
+  openSheet(`${head}<p class="options-note">Загружаем…</p>`);
+  let list;
+  try {
+    list = await api("/api/devices");
+  } catch (e) {
+    openSheet(`${head}<p class="note">${esc(errText(e))}</p>`);
+    return;
+  }
+  const rows = list.map((d) => `
+    <li>
+      <div class="device-main">
+        <b>${esc(d.name)}</b>${d.current ? `<em class="device-here">это устройство</em>` : ""}
+        <small>Вход ${esc(postTime(d.created_at))} · заходили ${esc(postTime(d.seen_at))}</small>
+      </div>
+      <button class="btn-sm" data-device="${d.id}" data-current="${d.current}">Выйти</button>
+    </li>`).join("");
+  openSheet(`${head}${rows
+    ? `<ul class="device-list">${rows}</ul>`
+    : `<p class="note"><strong>Пока нигде</strong>Установите приложение на телефон, и устройство появится здесь.</p>`}`, (panel) => {
+    panel.querySelectorAll("[data-device]").forEach((b) => b.addEventListener("click", async () => {
+      if (b.dataset.current === "true") return signOutHere();
+      b.disabled = true;
+      try {
+        await api(`/api/devices/${b.dataset.device}`, { method: "DELETE" });
+      } catch (e) {
+        b.disabled = false;
+        say(errText(e));
+        return;
+      }
+      haptic("success");
+      openDevicesSheet();
+    }));
+  });
+}
+
 /* ---------- onboarding: направление → курс → (группа) → имя ---------- */
 
 function startOnboarding(editing = false) {
@@ -501,7 +952,8 @@ function renderOnboarding() {
                placeholder="Например, Анна Ковалёва" value="${esc(ob.name)}">
         <p class="err" id="name-err" hidden></p>
       </div>
-      <p class="summary">Группа <b>${esc(ob.group?.name)}</b>, ${courseLabel(ob.course, ob.faculty.is_master)}<br>${esc(ob.faculty.name)}</p>`;
+      <p class="summary">Группа <b>${esc(ob.group?.name)}</b>, ${courseLabel(ob.course, ob.faculty.is_master)}<br>${esc(ob.faculty.name)}</p>
+      ${state.me.consent ? "" : consentCheck(Boolean(ob.consent))}`;
   }
 
   app.innerHTML = `
@@ -533,6 +985,7 @@ function renderOnboarding() {
     input.addEventListener("input", () => { ob.name = input.value; document.getElementById("name-err").hidden = true; });
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") { input.blur(); submitOnboarding(); } });
     document.getElementById("ob-done").addEventListener("click", submitOnboarding);
+    bindConsentCheck(app, () => Boolean(ob.consent), (v) => { ob.consent = v; document.getElementById("name-err").hidden = true; }, closeSheet);
   }
 }
 
@@ -554,26 +1007,206 @@ async function submitOnboarding() {
     haptic("error");
     return;
   }
+  if (!state.me.consent && !ob.consent) {
+    err.textContent = "Отметьте согласие: без него приложение не может сохранить ваши данные.";
+    err.hidden = false;
+    haptic("error");
+    return;
+  }
   const btn = document.getElementById("ob-done");
   btn.disabled = true;
   btn.textContent = "Сохраняем…";
   try {
     const changedGroup = state.me.group?.id !== ob.group.id;
-    state.me = await api("/api/profile", { method: "POST", body: JSON.stringify({ real_name: name, group_id: ob.group.id }) });
+    const newcomer = !state.me.consent;
+    state.me = await api("/api/profile", { method: "POST",
+      body: JSON.stringify({ real_name: name, group_id: ob.group.id, consent: Boolean(ob.consent) }) });
     if (changedGroup) { state.lessons.clear(); state.loadedWeeks.clear(); }
     const wasEditing = ob.editing;
     state.ob = null;
     haptic("success");
     state.tab = wasEditing && !changedGroup ? "profile" : "schedule";
+    if (newcomer) await resolveAvatar(state.me);
     await openSchedule();
+    startLive();   // a newcomer gets the bot's offer of the app for the phone: the server sends it on sign-up
   } catch (e) {
     btn.disabled = false;
     btn.textContent = ob.editing ? "Сохранить" : "Готово";
-    err.textContent = "Не получилось сохранить. Проверьте интернет и нажмите ещё раз.";
+    err.textContent = errText(e, "Не получилось сохранить. Проверьте интернет и нажмите ещё раз.");
     err.hidden = false;
     haptic("error");
   }
 }
+
+/* ---------- the privacy policy and the consent: two pages that also open in a browser (/privacy, /consent);
+   the app shows their #doc part in the bottom sheet ---------- */
+
+const docs = {};
+async function loadDoc(name) {
+  if (!docs[name]) {
+    const res = await fetch(`${name}.html`);
+    if (!res.ok) throw new HttpError(res.status, res.statusText);
+    docs[name] = new DOMParser().parseFromString(await res.text(), "text/html").getElementById("doc").innerHTML;
+  }
+  return docs[name];
+}
+
+/** a document in the sheet. onAccept adds «Принимаю», which ticks the consent;
+    back returns to the sheet it was opened from; locked keeps it from being swiped away */
+async function openDocSheet(name, { onAccept, back, locked = false } = {}) {
+  haptic();
+  const draw = (body) => openSheet(`
+    <article class="doc doc-sheet">${body}</article>
+    ${onAccept || back ? `<div class="sheet-actions doc-actions">
+      ${onAccept ? `<button class="btn" id="doc-accept">Принимаю</button>` : ""}
+      ${back ? `<button class="btn secondary" id="doc-back">Назад</button>` : ""}
+    </div>` : ""}`, (panel) => {
+    panel.scrollTop = 0;
+    panel.querySelector("#doc-accept")?.addEventListener("click", () => { haptic("success"); onAccept(); });
+    panel.querySelector("#doc-back")?.addEventListener("click", () => { haptic(); back(); });
+    panel.querySelectorAll(".doc a").forEach((a) => a.addEventListener("click", (e) => {
+      e.preventDefault();
+      if (a.dataset.doc) openDocSheet(a.dataset.doc, { onAccept, back, locked });
+      else openOut(a.href);
+    }));
+  }, { locked });
+  draw(`<p class="options-note">Загружаем…</p>`);
+  try {
+    draw(await loadDoc(name));
+  } catch (_) {
+    draw(`<p class="note"><strong>Не получилось загрузить</strong>Проверьте интернет и попробуйте ещё раз.</p>`);
+  }
+}
+
+/** the tick: «Даю согласие… и принимаю политику…»; each underlined part opens its document */
+const consentCheck = (ticked) => `
+  <div class="consent-check">
+    <button type="button" class="tick" id="consent-tick" role="checkbox" aria-checked="${ticked}" aria-labelledby="consent-text">${icon.check}</button>
+    <p id="consent-text">Даю <button type="button" class="doc-link" data-consent-doc="consent">согласие на обработку моих данных</button>
+      и принимаю <button type="button" class="doc-link" data-consent-doc="privacy">политику конфиденциальности</button></p>
+  </div>`;
+
+/** wire the tick: a tap on it or on the plain words toggles it, a tap on an underlined part opens the document */
+function bindConsentCheck(root, get, set, reopen) {
+  const tick = root.querySelector("#consent-tick");
+  if (!tick) return;
+  const toggle = () => { haptic(); set(!get()); tick.setAttribute("aria-checked", String(get())); };
+  tick.addEventListener("click", toggle);
+  root.querySelector("#consent-text").addEventListener("click", (e) => { if (!e.target.closest("[data-consent-doc]")) toggle(); });
+  root.querySelectorAll("[data-consent-doc]").forEach((b) => b.addEventListener("click", () =>
+    openDocSheet(b.dataset.consentDoc, {
+      onAccept: () => { set(true); tick.setAttribute("aria-checked", "true"); reopen(); },
+      back: reopen, locked: reopen !== closeSheet })));
+}
+
+/* those who signed up before the consent was asked for, or before its new edition, confirm it once, in a sheet over the app */
+const CONSENT_NEWS = "Появилось приложение на телефоне: в правилах описано, что хранится на устройствах, где вы вошли вне Telegram.";
+function askConsent() {
+  renderLoading();
+  let ticked = false;
+  const draw = () => openSheet(`
+    <div class="sheet-head"><div>
+      <h2 id="sheet-title">Обновили правила</h2>
+      <p>${CONSENT_NEWS} Чтобы продолжить, подтвердите согласие.</p>
+    </div></div>
+    ${consentCheck(ticked)}
+    <p class="err" id="consent-err" hidden></p>
+    <button class="btn consent-go" id="consent-go">Продолжить</button>`, (panel) => {
+    bindConsentCheck(panel, () => ticked, (v) => { ticked = v; panel.querySelector("#consent-err").hidden = true; }, draw);
+    panel.querySelector("#consent-go").addEventListener("click", async (e) => {
+      const err = panel.querySelector("#consent-err");
+      if (!ticked) {
+        err.textContent = "Отметьте согласие: без него приложение не может работать с вашими данными.";
+        err.hidden = false;
+        haptic("error");
+        return;
+      }
+      e.currentTarget.disabled = true;
+      try {
+        state.me = await api("/api/consent", { method: "POST" });
+      } catch (_) {
+        e.currentTarget.disabled = false;
+        err.textContent = "Не получилось сохранить. Проверьте интернет и нажмите ещё раз.";
+        err.hidden = false;
+        haptic("error");
+        return;
+      }
+      haptic("success");
+      closeSheet(true);
+      await resolveAvatar(state.me);
+      await openSchedule();
+      startLive();
+      warmOffline();
+      offerInstall();
+      maybeShowGuide(false);
+    });
+  }, { locked: true });
+  draw();
+}
+
+/* withdrawing consent: the account and everything tied to it is erased */
+function openDeleteSheet() {
+  haptic();
+  openSheet(`
+    <div class="sheet-head"><div>
+      <h2 id="sheet-title">Удалить аккаунт?</h2>
+      <p>Это отзыв согласия на обработку данных. Сразу и навсегда сотрутся:</p>
+    </div></div>
+    <ul class="erase-list">
+      <li>профиль: имя, ник, группа, фото и «о себе»;</li>
+      <li>друзья, заявки и серии огонька;</li>
+      <li>ваши записи, комментарии и реакции в клубах, а клубы, где вы одни, целиком;</li>
+      <li>напоминания, утренняя сводка, неделя в чате с ботом и ссылка на календарь.</li>
+    </ul>
+    <p class="erase-note">Если вы владелец клуба, в котором есть участники, сначала передайте права владельца. Из резервных копий данные исчезнут в течение 14 дней.</p>
+    <p class="err" id="erase-err" hidden></p>
+    <div class="sheet-actions">
+      <button class="btn danger" id="erase">Удалить навсегда</button>
+      <button class="btn secondary" data-close>Отмена</button>
+    </div>`, (panel) => {
+    const b = panel.querySelector("#erase");
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      b.textContent = "Удаляем…";
+      try {
+        await api("/api/account", { method: "DELETE" });
+      } catch (e) {
+        haptic("error");
+        b.disabled = false;
+        b.textContent = "Удалить навсегда";
+        const err = panel.querySelector("#erase-err");
+        err.textContent = errText(e, "Не получилось удалить. Проверьте интернет и попробуйте ещё раз.");
+        err.hidden = false;
+        return;
+      }
+      haptic("success");
+      closeSheet();
+      renderDeleted();
+    });
+  });
+}
+
+function renderDeleted() {
+  state.gone = true;
+  clearInterval(liveTimer);
+  if (!inTelegram) forgetDevice();
+  document.querySelectorAll(".notice").forEach((n) => n.remove());
+  showTabbar(false);
+  setBack(null);
+  window.scrollTo(0, 0);
+  app.innerHTML = `
+    <section class="ob">
+      <h1>Аккаунт удалён</h1>
+      <p class="lead">Ваши данные стёрты, согласие отозвано. Если захотите вернуться, просто откройте приложение снова.</p>
+      <div class="grow"></div>
+      <button class="btn" id="bye">${inTelegram ? "Закрыть приложение" : "Начать заново"}</button>
+    </section>`;
+  document.getElementById("bye").addEventListener("click", () => { if (inTelegram) tg.close(); else location.reload(); });
+}
+
+const consentNote = (me) => me.consent_at
+  ? `Дано ${new Date(me.consent_at).toLocaleDateString("ru-RU", { timeZone: "Europe/Moscow", day: "numeric", month: "long", year: "numeric" })}`
+  : "Что именно вы разрешили";
 
 /* ---------- schedule data ---------- */
 
@@ -823,7 +1456,8 @@ async function shiftWeek(delta, selectIso) {
   try {
     await loadWeek(ws);
   } catch (_) {
-    tg?.showAlert?.("Не удалось загрузить неделю. Проверьте интернет.");
+    say(state.offline ? "Эта неделя не сохранена на телефоне: чтобы её открыть, нужен интернет."
+      : "Не удалось загрузить неделю. Проверьте интернет.");
     return;
   }
   state.weekStart = ws;
@@ -1232,17 +1866,23 @@ function bindStats() {
 
 const sheet = document.getElementById("sheet");
 let backBeforeSheet = null; // what Telegram's back button did before the sheet took it over
-function openSheet(html, bind) {
+function openSheet(html, bind, { locked = false } = {}) {
+  hidePointer();
   const panel = sheet.querySelector(".sheet-panel");
   panel.innerHTML = `<div class="grabber" aria-hidden="true"></div>${html}`;
   sheet.classList.remove("closing");
+  sheet.classList.toggle("locked", locked);
   sheet.hidden = false;
   if (backHandler !== closeSheet) backBeforeSheet = backHandler;
-  setBack(closeSheet);
+  setBack(locked ? null : closeSheet);
   bind?.(panel);
 }
-function closeSheet() {
+/** force: close a locked sheet too (its own button does that) */
+function closeSheet(force) {
   if (sheet.hidden || sheet.classList.contains("closing")) return;
+  if (sheet.classList.contains("locked") && force !== true) return;
+  hidePointer();
+  sheet.classList.remove("locked");
   sheet.classList.add("closing");
   setBack(backBeforeSheet);
   backBeforeSheet = null;
@@ -1456,7 +2096,7 @@ const ROLE_NAME = { owner: "Владелец", admin: "Админ" };
 const memberCount = (n) => `${n} ${plural(n, "участник", "участника", "участников")}`;
 const clubMeta = (c) => [CLUB_CATS[c.category]?.[0], CLUB_VIS[c.visibility]?.[0], memberCount(c.members)].join(" · ");
 const errText = (e, fallback = "Не получилось. Проверьте интернет и попробуйте ещё раз.") =>
-  e instanceof HttpError && e.status >= 400 && e.status < 500 && e.message ? e.message : fallback;
+  e instanceof HttpError && (e.status === 0 || (e.status >= 400 && e.status < 500)) && e.message ? e.message : fallback;
 function say(msg) {
   if (inTelegram && tg.showAlert) tg.showAlert(msg); else alert(msg);
 }
@@ -2606,6 +3246,7 @@ function bindProfileBody() {
   const st = state.settings;
   app.querySelector('[data-set="remind_all"]')?.addEventListener("click", () => { haptic(); saveSetting({ remind_all: !st.remind_all }); });
   app.querySelector('[data-set="show_club"]')?.addEventListener("click", () => { haptic(); saveSetting({ show_club: !st.show_club }); });
+  app.querySelector('[data-set="bot_week"]')?.addEventListener("click", () => { haptic(); saveSetting({ bot_week: !st.bot_week }); });
   app.querySelectorAll("[data-lead]").forEach((b) => b.addEventListener("click", () => { haptic(); saveSetting({ remind_lead: Number(b.dataset.lead) }); }));
   app.querySelector('[data-set="digest"]')?.addEventListener("click", () => { haptic(); saveSetting({ digest_time: st.digest_time ? "off" : "07:30" }); });
   app.querySelectorAll("[data-digest]").forEach((b) => b.addEventListener("click", () => { haptic(); saveSetting({ digest_time: b.dataset.digest }); }));
@@ -2617,6 +3258,9 @@ function bindProfileBody() {
   }));
   document.getElementById("open-calendar")?.addEventListener("click", openCalendarSheet);
   document.getElementById("refresh-now")?.addEventListener("click", refreshNow);
+  app.querySelectorAll("[data-open-doc]").forEach((b) => b.addEventListener("click", () => openDocSheet(b.dataset.openDoc)));
+  document.getElementById("delete-account")?.addEventListener("click", openDeleteSheet);
+  bindPhoneSection();
   document.getElementById("report")?.addEventListener("click", () => {
     haptic();
     const url = `https://t.me/${DEVELOPER}`;
@@ -2843,9 +3487,9 @@ async function pressFlame(id) {
   haptic("success");
   try {
     p.flame = await api(`/api/friends/${id}/flame`, { method: "POST" });
-  } catch (_) {
+  } catch (e) {
     haptic("error");
-    tg?.showAlert?.("Не получилось зажечь огонёк. Проверьте интернет.");
+    say(errText(e, "Не получилось зажечь огонёк. Проверьте интернет."));
     return;
   }
   igniteButtons(id, p.flame.streak > before);
@@ -2882,6 +3526,8 @@ async function loadFriends() {
   } catch (_) {
     return;
   }
+  // a saved "at a pair right now" is stale by the time it is shown offline
+  if (state.offline) for (const f of state.friends.friends || []) f.now = null;
   showFriendNotice();
   if (state.tab === "profile" && state.profileView === "friends" && !document.activeElement?.matches?.("#friend-q")) {
     updateProfileBody();
@@ -3024,9 +3670,9 @@ async function friendAction(act, id) {
     else if (act === "accept") await api(`/api/friends/${id}/accept`, { method: "POST" });
     else await api(`/api/friends/${id}`, { method: "DELETE" }); // decline, cancel or remove
     haptic("success");
-  } catch (_) {
+  } catch (e) {
     haptic("error");
-    tg?.showAlert?.("Не получилось. Проверьте интернет и попробуйте ещё раз.");
+    say(errText(e));
   }
   await loadFriends();
   if (state.tab === "profile" && state.profileView === "friends") updateProfileBody();
@@ -3159,9 +3805,9 @@ async function saveSetting(patch) {
   updateProfileBody();
   try {
     state.settings = await api("/api/settings", { method: "POST", body: JSON.stringify(patch) });
-  } catch (_) {
+  } catch (e) {
     state.settings = before;
-    tg?.showAlert?.("Не получилось сохранить настройку. Проверьте интернет и попробуйте ещё раз.");
+    say(errText(e, "Не получилось сохранить настройку. Проверьте интернет и попробуйте ещё раз."));
   }
   updateProfileBody();
 }
@@ -3185,6 +3831,7 @@ function notificationsSection() {
       ${st.remind_all ? chipsRow("Заранее", leads) : ""}
       ${switchRow("digest", "Утренняя сводка", "Пары на день; в дни без пар бот молчит", Boolean(st.digest_time))}
       ${st.digest_time ? chipsRow("Во сколько", times) : ""}
+      ${switchRow("bot_week", "Неделя в чате с ботом", "Пары на неделю закреплены в чате и видны даже без интернета", st.bot_week)}
     </ul>`;
 }
 
@@ -3207,7 +3854,7 @@ function settingsView() {
   const opts = [
     ["dark", "Тёмная", "Чёрный фон"],
     ["light", "Светлая", "Белый фон"],
-    ["auto", "Как в Telegram", `Сейчас ${systemTheme() === "light" ? "светлая" : "тёмная"}`],
+    ["auto", inTelegram ? "Как в Telegram" : "Как в системе", `Сейчас ${systemTheme() === "light" ? "светлая" : "тёмная"}`],
   ];
   const view = viewPref();
   const synced = state.syncedAt
@@ -3236,6 +3883,15 @@ function settingsView() {
         <li><button role="radio" data-theme-pref="${id}" aria-checked="${pref === id}">
           <span>${label}<small>${hint}</small></span><span class="check">${icon.check}</span>
         </button></li>`).join("")}
+    </ul>
+
+    ${phoneSection()}
+
+    <h2 class="group-label">Данные и конфиденциальность</h2>
+    <ul class="options">
+      <li><button data-open-doc="privacy"><span>Политика конфиденциальности<small>Что хранится и кто это видит</small></span>${icon.right}</button></li>
+      <li><button data-open-doc="consent"><span>Согласие на обработку данных<small>${esc(consentNote(state.me))}</small></span>${icon.right}</button></li>
+      <li><button class="danger" id="delete-account"><span>Удалить аккаунт<small>Отозвать согласие и стереть все свои данные</small></span></button></li>
     </ul>
 
     <h2 class="group-label">Помощь</h2>
@@ -3455,28 +4111,44 @@ function profileView() {
 async function boot() {
   applyTheme();
   setupTelegram();
+  registerWorker();
   renderLoading();
+  // inside another app's browser the one-time sign-in is kept for Safari or Chrome, where the app can be installed
+  if (inOtherApp && /^#login=[\w-]+\.[\w-]+$/.test(location.hash)) return renderOpenOutside();
+  const handoff = inTelegram ? null : await takeHandoff();
   try {
     const [me, catalog] = await Promise.all([api("/api/me"), api("/api/catalog")]);
     state.me = me;
     state.catalog = catalog;
-    await resolveAvatar(me);
     state.scheduleView = viewPref();
-    if (!me.onboarded) startOnboarding(false);
-    else await openSchedule();
-    loadFriends();
-    loadClubs();
-    loadUnread();
-    setInterval(() => {
-      if (state.ob || document.visibilityState !== "visible") return;
-      loadFriends();
-      loadClubs();
-      loadUnread();
-    }, FRIENDS_POLL);
+    if (!me.onboarded) return startOnboarding(false);   // the consent tick waits on its last step
+    if (!me.consent) return askConsent();              // signed up before the consent was asked for, or before its new edition
+    await resolveAvatar(me);
+    await openSchedule();
+    startLive();
+    warmOffline();
+    offerInstall();
+    maybeShowGuide(Boolean(handoff?.ok));
   } catch (e) {
+    if (state.signingIn) return;
+    if (e instanceof HttpError && e.status === 401 && !inTelegram) return renderSignIn(handoff?.note || "");
     console.error(e);
     renderError(e, boot);
   }
+}
+
+/** what keeps the app current once the student has consented: friends, clubs, the bell */
+let liveTimer = null;
+function startLive() {
+  loadFriends();
+  loadClubs();
+  loadUnread();
+  liveTimer ??= setInterval(() => {
+    if (state.ob || state.gone || document.visibilityState !== "visible") return;
+    loadFriends();
+    loadClubs();
+    loadUnread();
+  }, FRIENDS_POLL);
 }
 
 // keep "now" honest while the app stays open: tick the lead card, redraw when the pair changes

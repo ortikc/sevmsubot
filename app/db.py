@@ -143,6 +143,28 @@ CREATE TABLE IF NOT EXISTS open_buttons (
     message_id  INTEGER NOT NULL,
     PRIMARY KEY (chat_id, message_id)
 );
+CREATE TABLE IF NOT EXISTS devices (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tg_id       INTEGER NOT NULL REFERENCES users(tg_id),     -- the app on a phone's home screen, signed in outside Telegram
+    key_hash    TEXT NOT NULL UNIQUE,                         -- sha256 of the device's key; the key itself lives only on the device
+    name        TEXT NOT NULL DEFAULT '',                     -- "Android · Chrome", from the browser it signed in with
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    seen_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS devices_by_user ON devices(tg_id);
+CREATE TABLE IF NOT EXISTS logins (
+    code        TEXT PRIMARY KEY,                             -- goes into the t.me link to the bot
+    secret_hash TEXT NOT NULL,                                -- sha256 of what only the waiting app knows
+    device      TEXT NOT NULL DEFAULT '',
+    tg_id       INTEGER,                                      -- whom the bot asked, then who confirmed
+    status      TEXT NOT NULL DEFAULT 'pending',              -- pending | asked | confirmed | denied
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS install_links (
+    token_hash  TEXT PRIMARY KEY,                             -- sha256 of the token behind the bot's «Скачать» button
+    tg_id       INTEGER NOT NULL REFERENCES users(tg_id),
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))       -- works once, for a day
+);
 CREATE TABLE IF NOT EXISTS meta (
     key         TEXT PRIMARY KEY,
     value       TEXT
@@ -181,6 +203,13 @@ MIGRATIONS = {
         ("avatar", "TEXT"),                              # file name (no extension) of an uploaded photo in data/avatars
         ("bio", "TEXT"),                                 # a few words about oneself, seen by friends and club members
         ("show_club", "INTEGER NOT NULL DEFAULT 0"),     # friends see your club next to your name; off until you turn it on
+        ("bot_week", "INTEGER NOT NULL DEFAULT 1"),      # the bot keeps the week's pairs pinned in its chat
+        ("week_msg", "INTEGER"),                         # that message's id
+        ("week_hash", "TEXT"),                           # what it last said, to edit it only when the week changes
+        ("consent_at", "TEXT"),                          # UTC time the student consented to processing their data
+        ("consent_version", "TEXT"),                     # the edition of the consent and privacy policy they accepted
+        ("app_offer", "TEXT"),                           # the bot's offer of the app for the phone: sent | declined | opened | installed
+        ("app_offer_msg", "INTEGER"),                    # that message's id, to take its buttons away once used
     ],
     "club_posts": [
         ("comments_off", "INTEGER NOT NULL DEFAULT 0"),  # the author closed the post to comments
