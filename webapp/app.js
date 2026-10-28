@@ -487,7 +487,11 @@ function syncMiniHead() {
     miniHead.firstChild.textContent = bigTitle?.textContent.trim() || "";
   }
   const r = bigTitle?.getBoundingClientRect();
-  const p = r ? Math.min(1, Math.max(0, (miniHead.offsetHeight - r.top) / Math.max(1, r.height))) : 0;
+  // how far the title has gone under the bar since the page was at the top: a title that sits under the bar's
+  // area to begin with (the clubs tab's) counts from there, so the bar never shows on a page nobody scrolled
+  const bar = miniHead.offsetHeight;
+  const under = r ? bar - r.top - Math.max(0, bar - (r.top + scrollY)) : 0;
+  const p = r ? Math.min(1, Math.max(0, under / Math.max(1, r.height))) : 0;
   miniHead.style.setProperty("--p", p.toFixed(3));
   miniHead.classList.toggle("on", p > 0.6);
   if (bigTitle) {
