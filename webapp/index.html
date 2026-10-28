@@ -36,15 +36,18 @@
   <nav class="tabbar slide-tabs" id="tabbar" role="tablist" aria-label="Разделы" hidden>
     <span class="slide-cursor" aria-hidden="true"></span>
     <button role="tab" data-tab="schedule"><span class="tab-inner">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="18" height="16.5" rx="3"/><path d="M8 2.5v4M16 2.5v4M3 10h18M7.5 14h3M13.5 14h3M7.5 17.5h3"/></svg>
+      <!-- the calendar leafs through two pages when tapped -->
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path class="cal-rings" d="M8 2.5v4M16 2.5v4"/><rect x="3" y="4.5" width="18" height="16.5" rx="3"/><path d="M3 10h18"/><path class="cal-lines" d="M7.5 14h3M13.5 14h3M7.5 17.5h3"/><path class="cal-leaf" d="M3.6 10h16.8v8.6a1.9 1.9 0 0 1-1.9 1.9H5.5a1.9 1.9 0 0 1-1.9-1.9Z"/><path class="cal-leaf l2" d="M3.6 10h16.8v8.6a1.9 1.9 0 0 1-1.9 1.9H5.5a1.9 1.9 0 0 1-1.9-1.9Z"/></svg>
       <span class="tab-label">Расписание</span>
     </span></button>
     <button role="tab" data-tab="clubs"><span class="tab-inner">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5 12 4l9 5.5M4.5 20.5h15M6 10.5v7M10 10.5v7M14 10.5v7M18 10.5v7"/></svg>
+      <!-- the columns rise one after another and the roof settles on them -->
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path class="club-roof" d="M3 9.5 12 4l9 5.5"/><path d="M4.5 20.5h15"/><path class="club-col" d="M6 10.5v7"/><path class="club-col c2" d="M10 10.5v7"/><path class="club-col c3" d="M14 10.5v7"/><path class="club-col c4" d="M18 10.5v7"/></svg>
       <span class="tab-label">Вступить</span>
     </span></button>
     <button role="tab" data-tab="profile"><span class="tab-inner">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.5"/><circle cx="12" cy="10" r="3.2"/><path d="M6.6 18.6c1.2-2 3.1-3 5.4-3s4.2 1 5.4 3"/></svg>
+      <!-- the little person twitches -->
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.5"/><g class="me"><circle class="me-head" cx="12" cy="10" r="3.2"/><path d="M6.6 18.6c1.2-2 3.1-3 5.4-3s4.2 1 5.4 3"/></g></svg>
       <span class="tab-label">Профиль</span>
     </span></button>
   </nav>

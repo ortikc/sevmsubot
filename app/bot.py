@@ -33,7 +33,6 @@ class Bot:
         # hooks the app sets: who to re-point when the address changes, and where "open" buttons were sent
         self.on_url_change = None   # async (url) -> None
         self.on_open_button = None  # (chat_id, message_id) -> None
-        self.on_week = None         # async (chat_id) -> None: /week sends the pinned week again
         self.on_login = None        # (sender, code) -> (text, keyboard | None): /start login_<code> from the app outside Telegram
         self.on_login_answer = None # (sender, code, yes) -> text: the student's answer under that question
         self.on_app = None          # async (chat_id) -> None: /app sends the offer of the app for the phone again
@@ -128,7 +127,6 @@ class Bot:
         log.info("bot @%s", self.username)
         await self.call("setMyCommands", commands=[
             {"command": "start", "description": "Открыть расписание"},
-            {"command": "week", "description": "Расписание недели в этом чате"},
             {"command": "app", "description": "Приложение на телефон"},
         ])
         return me
@@ -172,9 +170,6 @@ class Bot:
         if (msg.get("text") or "").startswith("/start login_") and self.on_login:
             text, keyboard = self.on_login(msg.get("from", {}), msg["text"].split("login_", 1)[1].strip())
             await self.call("sendMessage", chat_id=chat, text=text, **({"reply_markup": keyboard} if keyboard else {}))
-            return
-        if (msg.get("text") or "").startswith("/week") and self.on_week:
-            await self.on_week(chat)
             return
         if (msg.get("text") or "").split("@")[0].strip() == "/app" and self.on_app:
             await self.on_app(chat)

@@ -203,9 +203,9 @@ MIGRATIONS = {
         ("avatar", "TEXT"),                              # file name (no extension) of an uploaded photo in data/avatars
         ("bio", "TEXT"),                                 # a few words about oneself, seen by friends and club members
         ("show_club", "INTEGER NOT NULL DEFAULT 0"),     # friends see your club next to your name; off until you turn it on
-        ("bot_week", "INTEGER NOT NULL DEFAULT 1"),      # the bot keeps the week's pairs pinned in its chat
-        ("week_msg", "INTEGER"),                         # that message's id
-        ("week_hash", "TEXT"),                           # what it last said, to edit it only when the week changes
+        ("bot_week", "INTEGER NOT NULL DEFAULT 1"),      # retired: the bot no longer pins the week in its chat
+        ("week_msg", "INTEGER"),                         # an old pinned week still to take down (clear_pinned_weeks)
+        ("week_hash", "TEXT"),                           # retired
         ("consent_at", "TEXT"),                          # UTC time the student consented to processing their data
         ("consent_version", "TEXT"),                     # the edition of the consent and privacy policy they accepted
         ("app_offer", "TEXT"),                           # the bot's offer of the app for the phone: sent | declined | opened | installed
@@ -218,6 +218,7 @@ MIGRATIONS = {
     "reminders": [
         ("lead", "INTEGER NOT NULL DEFAULT 10"),
         ("auto", "INTEGER NOT NULL DEFAULT 0"),          # made by "remind about every pair"
+        ("msg_id", "INTEGER"),                           # its message in the chat, deleted once the pair begins
     ],
 }
 

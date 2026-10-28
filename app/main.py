@@ -150,14 +150,36 @@ async def send_due_reminders(now: datetime):
             # the schedule may have changed since the reminder was set: stay quiet about a pair that is gone
             still = conn.execute("SELECT 1 FROM lessons WHERE group_id=? AND date=? AND start=?",
                                  (r["group_id"], r["date"], r["start"])).fetchone()
-        if still and r["consent_at"]:  # without consent the reminder is dropped, never sent late
+        msg_id = None
+        # without consent the reminder is dropped; after the pair has begun (the server was down) it is no use
+        if still and r["consent_at"] and now < _pair_start(r):
             try:
-                await bot.send_rich(r["tg_id"], lambda e: _reminder_html(r, e))
+                sent = await bot.send_rich(r["tg_id"], lambda e: _reminder_html(r, e))
+                msg_id = sent.get("message_id") if isinstance(sent, dict) else None
             except Exception as e:  # the student may have blocked the bot; never retry forever
                 log.warning("reminder %s not sent: %s", r["id"], e)
         with db.session() as conn:
-            conn.execute("UPDATE reminders SET sent_at=? WHERE id=?",
-                         (datetime.now(timezone.utc).isoformat(timespec="seconds"), r["id"]))
+            conn.execute("UPDATE reminders SET sent_at=?, msg_id=? WHERE id=?",
+                         (datetime.now(timezone.utc).isoformat(timespec="seconds"), msg_id, r["id"]))
+
+
+def _pair_start(r) -> datetime:
+    return datetime.fromisoformat(f"{r['date']}T{r['start']}").replace(tzinfo=MSK)
+
+
+async def retire_reminders(now: datetime):
+    """A reminder has done its job once its pair begins: its message leaves the chat, so the chat stays clean."""
+    with db.session() as conn:
+        sent = [dict(r) for r in conn.execute("SELECT id, tg_id, date, start, msg_id FROM reminders WHERE msg_id IS NOT NULL")]
+    for r in sent:
+        if now < _pair_start(r):
+            continue
+        try:
+            await bot.call("deleteMessage", chat_id=r["tg_id"], message_id=r["msg_id"])
+        except Exception as e:  # the student deleted it already, or blocked the bot: nothing left to clean
+            log.info("reminder %s message not deleted: %s", r["id"], e)
+        with db.session() as conn:
+            conn.execute("UPDATE reminders SET msg_id=NULL WHERE id=?", (r["id"],))
 
 
 async def send_digests(now: datetime):
@@ -184,155 +206,33 @@ async def send_digests(now: datetime):
             log.warning("digest for %s not sent: %s", u["tg_id"], e)
 
 
-# ---------- the week in the bot's chat: a pinned message that is there without internet ----------
-# Telegram keeps a chat's messages on the phone, so the week's pairs, pinned in the chat with the bot,
-# can be read with no connection at all. One message per student, edited in place whenever the week changes.
+# ---------- the week in the bot's chat, retired ----------
+# The bot used to keep the week's pairs pinned in its chat. It no longer does; on the first start without it
+# the messages it left behind are taken down, a few a second: deleted, or where Telegram no longer allows that,
+# unpinned and marked as old. week_msg empties as it goes, so the round is done once.
 
-WEEKDAYS_RU = ("Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье")
-MONTHS_RU = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа",
-             "сентября", "октября", "ноября", "декабря")
-WEEK_EVERY = 10 * 60   # how often the pinned weeks are compared with the schedule, in seconds
-
-
-def _day_ru(d: date) -> str:
-    return f"{d.day} {MONTHS_RU[d.month - 1]}"
-
-
-def _week_body(conn, group_id: int, today: date) -> tuple[str, str]:
-    """The week's pairs as the bot writes them: (title, days). On Sunday it is already next week."""
-    monday = today - timedelta(days=today.weekday()) + timedelta(days=7 if today.weekday() == 6 else 0)
-    group = conn.execute("SELECT name FROM groups WHERE id=?", (group_id,)).fetchone()
-    rows = conn.execute("SELECT date, start, end, subject, kind, room FROM lessons WHERE group_id=? AND date BETWEEN ? AND ? "
-                        "ORDER BY date, start, subject", (group_id, monday.isoformat(), (monday + timedelta(days=6)).isoformat()))
-    by_day = {}
-    for r in rows:
-        by_day.setdefault(r["date"], []).append(r)
-    days = []
-    for i in range(7):
-        d = monday + timedelta(days=i)
-        lessons = by_day.get(d.isoformat(), [])
-        if i == 6 and not lessons:
-            continue   # Sunday only when there is something on it
-        head = f"<b>{WEEKDAYS_RU[i]}, {_day_ru(d)}</b>{' · сегодня' if d == today else ''}"
-        lines = []
-        for l in lessons:
-            kind = KINDS.get((l["kind"] or "").lower(), l["kind"] or "")
-            extra = ", ".join(x for x in (kind, f"ауд. {l['room']}" if l["room"] else "") if x)
-            lines.append(f"{_clock(l['start'])}–{_clock(l['end'])} · {html.escape(l['subject'])}"
-                         f"{f' ({html.escape(extra)})' if extra else ''}")
-        days.append(f"{head}\n" + ("\n".join(lines) if lines else "Пар нет"))
-    title = (f"📅 <b>Расписание {html.escape(group['name'] if group else '')}</b>\n"
-             f"Неделя {_day_ru(monday)} – {_day_ru(monday + timedelta(days=5))}")
-    return title, "\n\n".join(days)[:3500]
-
-
-async def _sync_week(tg_id: int, fresh: bool = False):
-    """Send and pin, or edit, one student's week so it says what the schedule says; quiet when nothing changed.
-    fresh: a new message even if the old one is fine (the /week command)."""
-    if not bot or tg_id <= 1:
-        return
-    now = datetime.now(MSK)
-    with db.session() as conn:
-        u = conn.execute("SELECT group_id, bot_week, week_msg, week_hash, consent_at FROM users WHERE tg_id=?",
-                         (tg_id,)).fetchone()
-        if not u or not u["group_id"] or not u["bot_week"] or not u["consent_at"]:
-            return
-        title, days = _week_body(conn, u["group_id"], now.date())
-    digest = hashlib.sha1(f"{title}\n{days}".encode()).hexdigest()
-    unchanged = u["week_msg"] and u["week_hash"] == digest
-    unreachable = u["week_hash"] == f"failed:{now.date()}"   # tried today already; tomorrow again
-    if not fresh and (unchanged or unreachable):
-        return
-    text = (f"{title}\n\n{days}\n\n<i>Обновлено {_day_ru(now.date())} в {now:%H:%M}. "
-            "Сообщение обновляется само, и его видно даже без интернета.</i>")
-    msg_id = None if fresh else u["week_msg"]
-    try:
-        if msg_id:
-            try:
-                await bot.call("editMessageText", chat_id=tg_id, message_id=msg_id, text=text, parse_mode="HTML")
-            except RuntimeError as e:
-                if "not modified" not in str(e):
-                    msg_id = None   # the student deleted it, or it can no longer be edited: send a new one
-        if not msg_id:
-            if u["week_msg"]:
-                await _retire_week_message(tg_id, u["week_msg"])
-            msg_id = (await bot.call("sendMessage", chat_id=tg_id, text=text, parse_mode="HTML",
-                                     disable_notification=True))["message_id"]
-            try:
-                await bot.call("pinChatMessage", chat_id=tg_id, message_id=msg_id, disable_notification=True)
-            except RuntimeError as e:
-                log.warning("week pin for %s: %s", tg_id, e)
-    except Exception as e:   # blocked the bot, never started it: try again tomorrow
-        log.warning("week message for %s: %s", tg_id, e)
-        with db.session() as conn:
-            conn.execute("UPDATE users SET week_hash=? WHERE tg_id=?", (f"failed:{now.date()}", tg_id))
+async def clear_pinned_weeks():
+    await asyncio.sleep(20)   # the bot first
+    if not bot:
         return
     with db.session() as conn:
-        conn.execute("UPDATE users SET week_msg=?, week_hash=? WHERE tg_id=?", (msg_id, digest, tg_id))
-
-
-async def _retire_week_message(tg_id: int, msg_id: int):
-    """Take an old week message away: delete it, or if Telegram no longer allows that, unpin it and say so."""
-    try:
-        await bot.call("deleteMessage", chat_id=tg_id, message_id=msg_id)
-        return
-    except RuntimeError:
-        pass
-    for method, params in (("unpinChatMessage", {"message_id": msg_id}),
-                           ("editMessageText", {"message_id": msg_id, "text": "Это расписание устарело, актуальное закреплено ниже."})):
+        left = [dict(r) for r in conn.execute("SELECT tg_id, week_msg FROM users WHERE week_msg IS NOT NULL")]
+    for u in left:
         try:
-            await bot.call(method, chat_id=tg_id, **params)
-        except RuntimeError:
-            pass
-
-
-async def _drop_week(tg_id: int):
-    """The setting was turned off: the pinned week leaves the chat."""
-    with db.session() as conn:
-        u = conn.execute("SELECT week_msg FROM users WHERE tg_id=?", (tg_id,)).fetchone()
-        conn.execute("UPDATE users SET week_msg=NULL, week_hash=NULL WHERE tg_id=?", (tg_id,))
-    if bot and u and u["week_msg"]:
-        try:
-            await bot.call("deleteMessage", chat_id=tg_id, message_id=u["week_msg"])
-        except RuntimeError:
+            await bot.call("deleteMessage", chat_id=u["tg_id"], message_id=u["week_msg"])
+        except Exception:
             for method, params in (("unpinChatMessage", {"message_id": u["week_msg"]}),
                                    ("editMessageText", {"message_id": u["week_msg"],
-                                                        "text": "Расписание недели в этом чате выключено. Включить снова можно в настройках приложения."})):
+                                                        "text": "Расписание недели в этом чате больше не обновляется: оно в приложении."})):
                 try:
-                    await bot.call(method, chat_id=tg_id, **params)
-                except RuntimeError:
-                    pass
-
-
-async def _week_command(chat_id: int):
-    """/week: the pinned week again, at once; it also turns the setting back on."""
-    with db.session() as conn:
-        u = conn.execute("SELECT group_id FROM users WHERE tg_id=?", (chat_id,)).fetchone()
-        if u and u["group_id"]:
-            conn.execute("UPDATE users SET bot_week=1 WHERE tg_id=?", (chat_id,))
-    if not u or not u["group_id"]:
-        await bot.call("sendMessage", chat_id=chat_id,
-                       text="Сначала откройте приложение и выберите свою группу, тогда я пришлю расписание недели.")
-        return
-    await _sync_week(chat_id, fresh=True)
-
-
-async def week_loop():
-    """Keeps every pinned week true: the schedule changes, the day turns, a new week begins."""
-    await asyncio.sleep(20)   # the bot first
-    while True:
-        if bot:
-            with db.session() as conn:
-                ids = [r["tg_id"] for r in conn.execute(
-                    "SELECT tg_id FROM users WHERE tg_id > 1 AND group_id IS NOT NULL AND bot_week=1 "
-                    "AND consent_at IS NOT NULL")]
-            for tg_id in ids:
-                try:
-                    await _sync_week(tg_id)
-                except Exception as e:
-                    log.warning("week loop for %s: %s", tg_id, e)
-                await asyncio.sleep(0.2)
-        await asyncio.sleep(WEEK_EVERY)
+                    await bot.call(method, chat_id=u["tg_id"], **params)
+                except Exception as e:   # blocked the bot, or the message is gone: nothing to take down
+                    log.info("pinned week of %s: %s", u["tg_id"], e)
+        with db.session() as conn:
+            conn.execute("UPDATE users SET week_msg=NULL, week_hash=NULL WHERE tg_id=?", (u["tg_id"],))
+        await asyncio.sleep(0.2)
+    if left:
+        log.info("pinned weeks taken down: %d", len(left))
 
 
 BACKUPS = ROOT / "data" / "backups"
@@ -357,7 +257,8 @@ async def backup_loop():
 
 
 async def reminder_loop():
-    """Every 20 seconds: plan the automatic reminders, send what is due, send morning summaries."""
+    """Every 20 seconds: plan the automatic reminders, send what is due, take down the ones whose pair has
+    begun, send morning summaries."""
     while True:
         await asyncio.sleep(20)
         if not bot:
@@ -367,6 +268,7 @@ async def reminder_loop():
             with db.session() as conn:
                 materialize_auto_reminders(conn, now)
             await send_due_reminders(now)
+            await retire_reminders(now)
             await send_digests(now)
         except Exception as e:
             log.warning("reminder loop: %s", e)
@@ -391,12 +293,11 @@ async def lifespan(_app):
     db.init()
     _close_profane_open_posts()
     tasks = [asyncio.create_task(full_sync_loop()), asyncio.create_task(reminder_loop()), asyncio.create_task(backup_loop()),
-             asyncio.create_task(week_loop())]
+             asyncio.create_task(clear_pinned_weeks())]
     if BOT_TOKEN:
         bot = Bot(BOT_TOKEN, os.getenv("WEBAPP_URL", ""), ROOT / "data" / "webapp_url.txt")
         bot.on_url_change = _repoint_everyone
         bot.on_open_button = _remember_open_button
-        bot.on_week = _week_command
         bot.on_login = _login_ask
         bot.on_login_answer = _login_answer
         bot.on_app = _app_command
@@ -588,7 +489,6 @@ def save_profile(body: ProfileIn, background: BackgroundTasks, user=Depends(curr
             conn.execute("UPDATE users SET consent_at=?, consent_version=? WHERE tg_id=?",
                          (datetime.now(timezone.utc).isoformat(timespec="seconds"), CONSENT_VERSION, user["tg_id"]))
         user = dict(conn.execute("SELECT * FROM users WHERE tg_id=?", (user["tg_id"],)).fetchone())
-        background.add_task(_sync_week, user["tg_id"])
         if newcomer:   # just signed up: the bot offers the app for the phone
             background.add_task(_offer_app, user["tg_id"])
         return _profile(conn, user)
@@ -606,7 +506,7 @@ def give_consent(user=Depends(current_user)):
 
 
 @app.delete("/api/account")
-def delete_account(background: BackgroundTasks, user=Depends(current_user)):
+def delete_account(user=Depends(current_user)):
     """Withdrawing consent: the student and everything tied to them is erased at once, freed pages zeroed.
     A club they own with other members in it must be handed over first; one they are alone in goes with them."""
     me = user["tg_id"]
@@ -618,7 +518,6 @@ def delete_account(background: BackgroundTasks, user=Depends(current_user)):
         if crowded:
             raise HTTPException(409, f"Вы владелец клуба «{crowded[0]}», в котором есть участники. "
                                      "Сначала передайте права владельца другому участнику.")
-        week = conn.execute("SELECT week_msg FROM users WHERE tg_id=?", (me,)).fetchone()
         conn.execute("PRAGMA secure_delete=ON")
         for c in owned:
             files += _erase_club(conn, c["id"])
@@ -643,8 +542,6 @@ def delete_account(background: BackgroundTasks, user=Depends(current_user)):
         files.append(AVATARS / f"{user['avatar']}.jpg")
     for f in files:
         f.unlink(missing_ok=True)
-    if bot and week and week["week_msg"]:   # the pinned week leaves the bot's chat too
-        background.add_task(_retire_week_message, me, week["week_msg"])
     return {"deleted": True}
 
 
@@ -823,7 +720,6 @@ class SettingsIn(BaseModel):
     remind_lead: int | None = None
     digest_time: str | None = None  # "HH:MM" from DIGEST_TIMES, or "off"
     show_club: bool | None = None
-    bot_week: bool | None = None
 
 
 def _calendar_url(conn, user) -> str:
@@ -842,7 +738,6 @@ def _settings(conn, user):
         "remind_lead": user["remind_lead"],
         "digest_time": user["digest_time"],
         "show_club": bool(user["show_club"]),
-        "bot_week": bool(user["bot_week"]),
         "calendar_url": _calendar_url(conn, user),
         "leads": list(LEADS),
         "digest_times": list(DIGEST_TIMES),
@@ -856,7 +751,7 @@ def get_settings(user=Depends(consented_user)):
 
 
 @app.post("/api/settings")
-def save_settings(body: SettingsIn, background: BackgroundTasks, user=Depends(consented_user)):
+def save_settings(body: SettingsIn, user=Depends(consented_user)):
     now = datetime.now(timezone.utc)
     with db.session() as conn:
         if body.remind_lead is not None:
@@ -882,10 +777,6 @@ def save_settings(body: SettingsIn, background: BackgroundTasks, user=Depends(co
                 raise HTTPException(400, "Такого времени нет в списке")
         if body.show_club is not None:
             conn.execute("UPDATE users SET show_club=? WHERE tg_id=?", (int(body.show_club), user["tg_id"]))
-        if body.bot_week is not None:
-            conn.execute("UPDATE users SET bot_week=? WHERE tg_id=?", (int(body.bot_week), user["tg_id"]))
-            # after the answer: the pinned week arrives or leaves the chat
-            background.add_task(_sync_week if body.bot_week else _drop_week, user["tg_id"])
         return _settings(conn, user)
 
 

@@ -64,6 +64,11 @@ function now() {
   const s = new Date().toLocaleString("sv-SE", { timeZone: "Europe/Moscow" });
   return parseLocal(s.replace(" ", "T"));
 }
+/** now() with the seconds in its minutes, so the running pair's bar moves every second, not in minute steps */
+function nowPrecise() {
+  const t = now();
+  return new URLSearchParams(location.search).has("now") ? t : { ...t, min: t.min + new Date().getSeconds() / 60 };
+}
 function parseLocal(s) {
   const [d, t = "00:00"] = s.split("T");
   const [hh, mm] = t.split(":").map(Number);
@@ -130,36 +135,41 @@ const icon = {
   bell: svg('<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.6 2.2H4.4Z"/><path d="M10 20.6a2.1 2.1 0 0 0 4 0"/>'),
   globe: svg('<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.3 2.4 3.4 5.2 3.4 8.5s-1.1 6.1-3.4 8.5c-2.3-2.4-3.4-5.2-3.4-8.5s1.1-6.1 3.4-8.5Z"/>'),
   plane: svg('<path d="M20.5 4.5 3.5 11.3l5.7 2.1 2.1 6.1 3.3-3.8 4.3 3.1Z"/><path d="m9.2 13.4 11.3-8.9"/>'),
+  copy: svg('<rect x="8.5" y="8.5" width="11" height="11" rx="2.2"/><path d="M15.5 8.5v-2a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/>'),
+  tick: svg('<path pathLength="1" d="M5 12.5 10 17.5 19 7"/>'),   // a check that draws itself (.btn-ico)
 };
 
 /* ---------- subjects: one colour and one drawn mark per discipline ----------
    The mark is a small line drawing of the discipline's own sign (an integral, a triangle in a circle,
    an hourglass), drawn in the subject's colour; the colour stays the same for that subject all week. */
 
+// Each mark has named parts for the little scene it plays when its pair's sheet opens (or the mark is tapped):
+// the integral writes itself, the atom spins, the hourglass turns over, the scales tip… (.mark.play, app.css).
+// A part with pathLength="1" is one the scene draws.
 const SUBJECT_MARKS = {
-  analysis: '<path d="M14.5 3.5c-1.9 0-2.5 1.5-2.8 3.5L10.2 17c-.3 2-.9 3.5-2.7 3.5"/><path d="M14 14.5c.9-1.6 1.8-1.6 2.7 0s1.8 1.6 2.8 0"/>',
-  geometry: '<path d="M12 4 20.5 19h-17Z"/><circle cx="12" cy="14" r="3"/>',
-  algorithms: '<circle cx="6" cy="6" r="2.2"/><circle cx="18" cy="6" r="2.2"/><circle cx="12" cy="18" r="2.2"/><path d="M8.2 6h7.6M7.2 7.9l3.6 8.2M16.8 7.9l-3.6 8.2"/>',
-  code: '<path d="M8.5 7.5 4 12l4.5 4.5M15.5 7.5 20 12l-4.5 4.5M13.5 5.5l-3 13"/>',
-  history: '<path d="M7 3.5h10M7 20.5h10M8 3.5c0 5 8 5.5 8 8.5s-8 3.5-8 8.5M16 3.5c0 5-8 5.5-8 8.5s8 3.5 8 8.5"/>',
-  sport: '<path d="M7.5 12h9"/><rect x="4.5" y="7" width="3" height="10" rx="1.2"/><rect x="16.5" y="7" width="3" height="10" rx="1.2"/><path d="M2.5 10v4M21.5 10v4"/>',
-  language: '<path d="M5 4.5h14a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5h-8l-4.5 3.5v-3.5H5A1.5 1.5 0 0 1 3.5 15V6A1.5 1.5 0 0 1 5 4.5Z"/><path d="M9.5 13.5 12 7.5l2.5 6M10.4 11.4h3.2"/>',
-  safety: '<path d="M12 3.5 5 6.5v5c0 4.3 2.9 7.5 7 9 4.1-1.5 7-4.7 7-9v-5Z"/><path d="M12 9v6M9 12h6"/>',
-  physics: '<circle cx="12" cy="12" r="1.4"/><ellipse cx="12" cy="12" rx="9" ry="3.6"/><ellipse cx="12" cy="12" rx="9" ry="3.6" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="9" ry="3.6" transform="rotate(120 12 12)"/>',
-  economics: '<path d="M4 20h16M7 16.5v-4M12 16.5V8.5M17 16.5V5.5"/>',
-  psychology: '<path d="M12 4v16M7 6v3.5a5 5 0 0 0 10 0V6M9.5 20h5"/>',
-  literature: '<path d="M3.5 6c3-1 5.8-.8 8.5 1 2.7-1.8 5.5-2 8.5-1v12.5c-3-1-5.8-.8-8.5 1-2.7-1.8-5.5-2-8.5-1Z"/><path d="M12 7v12.5"/>',
-  media: '<path d="M4 5h12.5v14H6a2 2 0 0 1-2-2Z"/><path d="M16.5 9H20v8a2 2 0 0 1-2 2M7 9h6.5M7 12h6.5M7 15h4"/>',
-  geography: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.4 3.5 5.4 3.5 8.5s-1.1 6.1-3.5 8.5c-2.4-2.4-3.5-5.4-3.5-8.5s1.1-6.1 3.5-8.5Z"/>',
-  law: '<path d="M12 4v16M8 20h8M5 7h14M5 7l-2.5 6a2.5 2.5 0 0 0 5 0ZM19 7l-2.5 6a2.5 2.5 0 0 0 5 0Z"/>',
-  chance: '<rect x="4" y="4" width="16" height="16" rx="3.5"/><circle cx="9" cy="9" r=".6"/><circle cx="15" cy="15" r=".6"/><circle cx="15" cy="9" r=".6"/><circle cx="9" cy="15" r=".6"/>',
-  book: '<path d="M6 4h12v16H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/><path d="M4 17.5A2 2 0 0 1 6 15.5h12M9 8h6"/>',
+  analysis: '<path class="draw" pathLength="1" d="M14.5 3.5c-1.9 0-2.5 1.5-2.8 3.5L10.2 17c-.3 2-.9 3.5-2.7 3.5"/><path class="m-wave" d="M14 14.5c.9-1.6 1.8-1.6 2.7 0s1.8 1.6 2.8 0"/>',
+  geometry: '<path class="draw" pathLength="1" d="M12 4 20.5 19h-17Z"/><circle class="m-pop" cx="12" cy="14" r="3"/>',
+  algorithms: '<circle class="m-pop" cx="6" cy="6" r="2.2"/><circle class="m-pop p2" cx="18" cy="6" r="2.2"/><circle class="m-pop p3" cx="12" cy="18" r="2.2"/><path class="draw" pathLength="1" d="M8.2 6h7.6"/><path class="draw d2" pathLength="1" d="M16.8 7.9l-3.6 8.2"/><path class="draw d3" pathLength="1" d="M10.8 16.1 7.2 7.9"/>',
+  code: '<path class="m-left" d="M8.5 7.5 4 12l4.5 4.5"/><path class="m-right" d="M15.5 7.5 20 12l-4.5 4.5"/><path class="m-slash" d="M13.5 5.5l-3 13"/>',
+  history: '<g class="m-turn"><path d="M7 3.5h10M7 20.5h10M8 3.5c0 5 8 5.5 8 8.5s-8 3.5-8 8.5M16 3.5c0 5-8 5.5-8 8.5s8 3.5 8 8.5"/></g>',
+  sport: '<g class="m-lift"><path d="M7.5 12h9"/><rect x="4.5" y="7" width="3" height="10" rx="1.2"/><rect x="16.5" y="7" width="3" height="10" rx="1.2"/><path d="M2.5 10v4M21.5 10v4"/></g>',
+  language: '<g class="m-wobble"><path d="M5 4.5h14a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5h-8l-4.5 3.5v-3.5H5A1.5 1.5 0 0 1 3.5 15V6A1.5 1.5 0 0 1 5 4.5Z"/></g><path class="m-pop" d="M9.5 13.5 12 7.5l2.5 6M10.4 11.4h3.2"/>',
+  safety: '<path class="m-pulse" d="M12 3.5 5 6.5v5c0 4.3 2.9 7.5 7 9 4.1-1.5 7-4.7 7-9v-5Z"/><path class="m-spin" d="M12 9v6M9 12h6"/>',
+  physics: '<circle class="m-pop" cx="12" cy="12" r="1.4"/><g class="m-orbit"><ellipse cx="12" cy="12" rx="9" ry="3.6"/><ellipse cx="12" cy="12" rx="9" ry="3.6" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="9" ry="3.6" transform="rotate(120 12 12)"/></g>',
+  economics: '<path d="M4 20h16"/><path class="m-bar" d="M7 16.5v-4"/><path class="m-bar b2" d="M12 16.5V8.5"/><path class="m-bar b3" d="M17 16.5V5.5"/>',
+  psychology: '<path class="draw" pathLength="1" d="M12 4v16"/><path class="m-cup" d="M7 6v3.5a5 5 0 0 0 10 0V6"/><path d="M9.5 20h5"/>',
+  literature: '<path d="M3.5 6c3-1 5.8-.8 8.5 1 2.7-1.8 5.5-2 8.5-1v12.5c-3-1-5.8-.8-8.5 1-2.7-1.8-5.5-2-8.5-1Z"/><path d="M12 7v12.5"/><path class="m-leaf" d="M12 7c2.7-1.8 5.5-2 8.5-1v12.5c-3-1-5.8-.8-8.5 1Z"/>',
+  media: '<path d="M4 5h12.5v14H6a2 2 0 0 1-2-2Z"/><path d="M16.5 9H20v8a2 2 0 0 1-2 2"/><path class="draw" pathLength="1" d="M7 9h6.5"/><path class="draw d2" pathLength="1" d="M7 12h6.5"/><path class="draw d3" pathLength="1" d="M7 15h4"/>',
+  geography: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path class="m-meridian" d="M12 3.5c2.4 2.4 3.5 5.4 3.5 8.5s-1.1 6.1-3.5 8.5c-2.4-2.4-3.5-5.4-3.5-8.5s1.1-6.1 3.5-8.5Z"/>',
+  law: '<path d="M12 4v16M8 20h8"/><g class="m-tilt"><path d="M5 7h14M5 7l-2.5 6a2.5 2.5 0 0 0 5 0ZM19 7l-2.5 6a2.5 2.5 0 0 0 5 0Z"/></g>',
+  chance: '<g class="m-roll"><rect x="4" y="4" width="16" height="16" rx="3.5"/><circle class="m-pop" cx="9" cy="9" r=".6"/><circle class="m-pop p2" cx="15" cy="15" r=".6"/><circle class="m-pop p3" cx="15" cy="9" r=".6"/><circle class="m-pop p4" cx="9" cy="15" r=".6"/></g>',
+  book: '<g class="m-lift"><path d="M6 4h12v16H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/><path d="M4 17.5A2 2 0 0 1 6 15.5h12"/></g><path class="draw" pathLength="1" d="M9 8h6"/>',
 };
 
 // first match wins, so the specific disciplines come before the broad ones
 const SUBJECT_RULES = [
   [/физическ\S* культур|спорт|элективн/, "sport", "orange"],
-  [/алгоритм|дискретн|граф/, "algorithms", "green"],
+  [/алгоритм|дискретн|(^|[\s(])граф/, "algorithms", "green"],   // «теория графов», not «география»
   [/эвм|программ|информат|компьютер|баз\S* данных|веб/, "code", "teal"],
   [/анализ|математ|дифференц|интеграл|исчислен/, "analysis", "blue"],
   [/алгебр|геометр|топологи/, "geometry", "yellow"],
@@ -191,7 +201,17 @@ function subjectStyle(name) {
   return style;
 }
 const hueVar = (name) => `--c: var(--hue-${subjectStyle(name).hue})`;
-const markSvg = (name, cls = "mark") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${SUBJECT_MARKS[subjectStyle(name).mark]}</svg>`;
+const markSvg = (name, cls = "mark") => {
+  const { mark } = subjectStyle(name);
+  return `<svg class="${cls}" data-mark="${mark}" viewBox="0 0 24 24" aria-hidden="true">${SUBJECT_MARKS[mark]}</svg>`;
+};
+/** the mark plays its scene once more, even if it was already playing */
+function playMark(svg) {
+  if (!svg || reduceMotion.matches) return;
+  svg.classList.remove("play");
+  void svg.getBoundingClientRect();
+  svg.classList.add("play");
+}
 
 /* ---------- api ---------- */
 
@@ -297,6 +317,35 @@ function avatarHtml(me, cls = "") {
 
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
 
+/** el shows text whose digits roll like a counter's drums from `from` (by default what el shows now): the stats
+    count up from zero, the minutes left tick over. Text whose shape changes ("10 мин" → "9 мин") just swaps.
+    The drums are tags of their own (x-…), so the page's rules for spans and the like never reach inside them. */
+function rollTo(el, text, { from } = {}) {
+  text = String(text);
+  const shown = el.dataset.roll ?? el.textContent;
+  if ((from ?? shown) === text) return;
+  from ??= shown;
+  el.dataset.roll = text;
+  const shape = (s) => s.replace(/\d/g, "0");
+  const roll = shape(from) === shape(text) && !reduceMotion.matches;
+  const drums = [];
+  let at = 0;
+  const html = text.split(/(\d+)/).map((part, i) => {
+    const start = at;
+    at += part.length;
+    if (i % 2 === 0) return esc(part);
+    return `<x-drums>${[...part].map((d, j) => {
+      drums.push(d);
+      return `<x-drum><x-col style="--n:${roll ? from[start + j] : d};--k:${drums.length - 1}">${"0123456789".replace(/\d/g, "<x-d>$&</x-d>")}</x-col></x-drum>`;
+    }).join("")}</x-drums>`;
+  }).join("");
+  el.innerHTML = `<x-sr>${esc(text)}</x-sr><x-roll aria-hidden="true">${html}</x-roll>`;
+  if (!roll) return;
+  // two frames: the drums must paint at their start before they turn
+  requestAnimationFrame(() => requestAnimationFrame(() =>
+    el.querySelectorAll("x-col").forEach((s, j) => s.style.setProperty("--n", drums[j]))));
+}
+
 /** a spring on the cursor's x and width: framer-motion's stiffness, a little more damping so it barely overshoots */
 function spring(apply, { stiffness = 550, damping = 38, mass = 1 } = {}) {
   const v = { x: 0, w: 0, vx: 0, vw: 0, tx: 0, tw: 0 };
@@ -382,16 +431,25 @@ class SlideTabs {
     this.selected = i;
     this.tabs.forEach((t, j) => t.setAttribute("aria-selected", String(j === i)));
     this.cursorTo(i, instant);
+    if (fromUser) this.play(i);
     if (fromUser && changed) this.onSelect?.(this.tabs[i], i);
   }
   place() { this.cursorTo(this.selected, true); }
+  /** the tapped tab's icon plays its little scene (CSS, `[data-fx]`), once more even if it was already playing */
+  play(i) {
+    const tab = this.tabs[i];
+    if (!tab.querySelector("svg")) return;
+    tab.removeAttribute("data-fx");
+    void tab.offsetWidth;
+    tab.setAttribute("data-fx", "");
+  }
 }
 
 const TABS = ["schedule", "clubs", "profile"];
 const tabbarTabs = new SlideTabs(tabbar, (tab) => {
   haptic();
   state.tab = tab.dataset.tab;
-  if (state.tab === "schedule") { state.selected = now().iso; state.weekStart = mondayOf(state.selected); }
+  if (state.tab === "schedule") { state.selected = now().iso; state.weekStart = mondayOf(state.selected); enterNext = true; }
   if (state.tab === "clubs" && state.clubView?.kind === "club") { state.clubView.data = null; state.clubView.feed = null; }
   if (state.tab === "clubs") state.sharedFeed = null;
   render();
@@ -409,11 +467,36 @@ function showTabbar(on) {
 // the bar steps aside while you scroll down through the day and comes back as soon as you scroll up
 let lastScrollY = 0;
 addEventListener("scroll", () => {
+  syncMiniHead();
   const y = window.scrollY, d = y - lastScrollY;
   if (Math.abs(d) < 8) return;
   tabbar.classList.toggle("away", d > 0 && y > 80);
   lastScrollY = y;
 }, { passive: true });
+
+/* the compact title: as the page's big title scrolls under the top edge it fades and shrinks, and a small copy
+   of it settles into a blurred bar there (--p, 0 to 1, follows the scroll); a tap on the bar goes back up */
+const miniHead = Object.assign(document.createElement("div"), { className: "mini-head", innerHTML: "<b></b>" });
+miniHead.setAttribute("aria-hidden", "true");
+document.body.append(miniHead);
+miniHead.addEventListener("click", () => { haptic(); scrollTo({ top: 0, behavior: reduceMotion.matches ? "auto" : "smooth" }); });
+let bigTitle = null;
+function syncMiniHead() {
+  if (!bigTitle?.isConnected) {
+    bigTitle = app.querySelector("h1");
+    miniHead.firstChild.textContent = bigTitle?.textContent.trim() || "";
+  }
+  const r = bigTitle?.getBoundingClientRect();
+  const p = r ? Math.min(1, Math.max(0, (miniHead.offsetHeight - r.top) / Math.max(1, r.height))) : 0;
+  miniHead.style.setProperty("--p", p.toFixed(3));
+  miniHead.classList.toggle("on", p > 0.6);
+  if (bigTitle) {
+    bigTitle.style.opacity = p ? String(1 - 0.85 * p) : "";
+    bigTitle.style.transform = p ? `scale(${1 - 0.06 * p})` : "";
+  }
+}
+// a new screen brings a new big title
+new MutationObserver(() => { bigTitle = null; requestAnimationFrame(syncMiniHead); }).observe(app, { childList: true, subtree: true });
 function placeTabs() {
   tabbarTabs.place();
   if (profileTabs?.root.isConnected) profileTabs.place();
@@ -433,17 +516,25 @@ function render() {
   else renderSchedule();
 }
 
+/** grey shapes of the day screen while it loads, a light running across them all at once */
 function renderLoading() {
   showTabbar(false);
   app.innerHTML = `
-    <div class="skeleton" aria-label="Загружаем расписание">
-      <i style="width:62%;height:26px"></i>
-      <i style="width:44%;height:16px;margin-top:8px"></i>
-      <i style="width:100%;height:64px;margin-top:28px;border-radius:14px"></i>
-      <i style="width:100%;height:10px;margin-top:24px"></i>
-      <i style="width:100%;height:190px;margin-top:30px;border-radius:20px"></i>
+    <div class="skeleton" role="status" aria-label="Загружаем расписание">
+      <div class="sk-row"><i class="sk" style="flex:1;height:46px;border-radius:999px"></i><i class="sk" style="width:46px;height:46px;border-radius:50%"></i></div>
+      <i class="sk" style="width:62%;height:28px;margin-top:22px"></i>
+      <i class="sk" style="width:44%;height:16px;margin-top:10px"></i>
+      <div class="sk-row" style="margin-top:22px">${'<i class="sk" style="flex:1;height:64px;border-radius:14px"></i>'.repeat(6)}</div>
+      ${daySkeleton()}
     </div>`;
 }
+/** the body of a day while its week loads: the time strip, the lead card, two pairs */
+const daySkeleton = () => `
+  <i class="sk" style="width:100%;height:8px;margin-top:26px"></i>
+  <i class="sk" style="width:100%;height:176px;margin-top:28px;border-radius:var(--radius-card)"></i>
+  <i class="sk" style="width:40%;height:18px;margin-top:28px"></i>
+  <i class="sk" style="width:100%;height:70px;margin-top:12px;border-radius:16px"></i>
+  <i class="sk" style="width:100%;height:70px;margin-top:8px;border-radius:16px"></i>`;
 
 function renderError(err, retry) {
   showTabbar(false);
@@ -772,6 +863,7 @@ async function signedIn(key) {
 /** the key and everything saved for offline leave this device */
 async function forgetDevice() {
   setDeviceKey("");
+  forgetGreeting();   // a signed-out phone greets no one by name
   try { await Promise.all(["data", "files"].map((c) => window.caches?.delete(c))); } catch (_) {}
 }
 
@@ -1189,6 +1281,7 @@ function openDeleteSheet() {
 function renderDeleted() {
   state.gone = true;
   clearInterval(liveTimer);
+  forgetGreeting();
   if (!inTelegram) forgetDevice();
   document.querySelectorAll(".notice").forEach((n) => n.remove());
   showTabbar(false);
@@ -1232,9 +1325,12 @@ async function openSchedule() {
   state.weekStart = mondayOf(state.selected);
   if (!state.loadedWeeks.has(state.weekStart)) renderLoading();
   await Promise.all([loadWeek(state.weekStart), loadReminders()]);
+  enterNext = true;
   render();
-  // the next pair after today may sit in next week
-  loadWeek(addDays(mondayOf(now().iso), 7)).then(() => { if (!state.ob && state.tab === "schedule") renderSchedule(); }).catch(() => {});
+  // the next pair after today may sit in next week; redraw only if it does, so the cascade plays out
+  loadWeek(addDays(mondayOf(now().iso), 7)).then(() => {
+    if (!state.ob && state.tab === "schedule" && liveSig(nextPair()) !== state.liveSig) renderSchedule();
+  }).catch(() => {});
 }
 
 /** pairs of a day, subgroups sharing one slot */
@@ -1273,6 +1369,11 @@ const liveSig = (nxt) => (nxt ? `${nxt.iso}|${nxt.slot.pair}|${nxt.running}` : "
 
 /* ---------- screen: schedule ---------- */
 
+// the day's cards rise one after another (.enter .rise) when the day is new on screen: another day, week or view,
+// the tab just opened; not when the same day redraws itself
+let enterNext = false;
+const takeEnter = () => { const e = enterNext; enterNext = false; return e; };
+
 function renderDay({ dir = 0, animateDay = false } = {}) {
   const me = state.me, g = me.group;
   const t = now();
@@ -1299,7 +1400,7 @@ function renderDay({ dir = 0, animateDay = false } = {}) {
   const isPast = (s) => iso < t.iso || (isToday && t.min >= toMin(s.end));
   const isNow = (s) => isToday && t.min >= toMin(s.start) && t.min < toMin(s.end);
   const strip = slots.length ? `
-    <div class="strip" role="img" aria-label="Пары с ${span}" data-from="${from}" data-to="${to}">
+    <div class="strip rise" style="--i:0" role="img" aria-label="Пары с ${span}" data-from="${from}" data-to="${to}">
       ${slots.map((s) => {
         const cls = isNow(s) ? "now" : isPast(s) ? "past" : "";
         return `<span class="bar ${cls}" style="${hueVar(s.items[0].subject)};left:${pct(toMin(s.start))}%;width:${pct(toMin(s.end)) - pct(toMin(s.start))}%"></span>
@@ -1313,9 +1414,9 @@ function renderDay({ dir = 0, animateDay = false } = {}) {
   if (leadSlot) {
     const l = leadSlot.items[0];
     const status = `<p class="status num" id="lead-status"><i class="dot ${nxt.running ? "" : "later"}"></i><span>${statusText(nxt)}</span></p>`;
-    const progress = nxt.running ? `<div class="lead-progress" aria-hidden="true"><i id="lead-bar" style="width:${progressOf(nxt, t)}%"></i></div>` : "";
+    const progress = nxt.running ? `<div class="lead-progress" aria-hidden="true"><i id="lead-bar" style="width:${progressOf(nxt, nowPrecise())}%"></i></div>` : "";
     lead = `
-      <article class="lead-card pressable" style="${hueVar(l.subject)}" data-date="${iso}" data-pair="${leadSlot.pair}" data-idx="0" role="button" tabindex="0">
+      <article class="lead-card pressable rise" style="${hueVar(l.subject)};--i:1" data-date="${iso}" data-pair="${leadSlot.pair}" data-idx="0" role="button" tabindex="0">
         ${markSvg(l.subject, "mark lead-mark")}
         <h2>${esc(l.subject)}</h2>
         <p class="who">${esc([kindName(l.kind), l.teacher].filter(Boolean).join(" · "))}</p>
@@ -1330,16 +1431,17 @@ function renderDay({ dir = 0, animateDay = false } = {}) {
   }
 
   const listSlots = slots.filter((s) => !leadSlot || s.pair !== leadSlot.pair);
+  let k = 3;   // the cascade: strip 0, lead card 1, title 2, then the pairs
   const rows = listSlots.map((s) => {
     const prev = slots[slots.indexOf(s) - 1]; // the whole day, so a break after the lead pair still shows
     const pause = prev ? toMin(s.start) - toMin(prev.end) : 0;
-    const gap = pause >= 30 ? `<li class="gap"><span class="num">${clock(prev.end)}–${clock(s.start)}</span> · перерыв ${duration(pause)}</li>` : "";
+    const gap = pause >= 30 ? `<li class="gap rise" style="--i:${k++}"><span class="num">${clock(prev.end)}–${clock(s.start)}</span> · перерыв ${duration(pause)}</li>` : "";
     return gap + s.items.map((l, j) => `
-      <li class="pair pressable ${isPast(s) ? "past" : ""}" style="${hueVar(l.subject)}" data-date="${iso}" data-pair="${s.pair}" data-idx="${j}" role="button" tabindex="0">
+      <li class="pair pressable rise ${isPast(s) ? "past" : ""}" style="${hueVar(l.subject)};--i:${k++}" data-date="${iso}" data-pair="${s.pair}" data-idx="${j}" role="button" tabindex="0">
         <span class="t">${clock(s.start)}<br>${clock(s.end)}</span>
         <div>
           <h3>${esc(l.subject)}</h3>
-          <p>${esc(kindName(l.kind))}${l.room ? ` · <b>ауд. ${esc(l.room)}</b>` : ""}${l.teacher ? ` · ${esc(shortName(l.teacher))}` : ""}${state.reminders.has(remKey(iso, l.start, l.subject)) ? ` · <span class="reminded">напомню</span>` : ""}</p>
+          <p>${esc(kindName(l.kind))}${l.room ? ` · <b>ауд. ${esc(l.room)}</b>` : ""}${l.teacher ? ` · ${esc(shortName(l.teacher))}` : ""}${state.reminders.has(remKey(iso, l.start, l.subject)) ? ` · <span class="reminded ${freshReminder === remKey(iso, l.start, l.subject) ? "fresh" : ""}">напомню</span>` : ""}</p>
         </div>
         ${markSvg(l.subject)}
       </li>`).join("");
@@ -1347,11 +1449,12 @@ function renderDay({ dir = 0, animateDay = false } = {}) {
 
   let body;
   if (!slots.length) body = emptyDay(iso, t, nxt);
-  else if (isToday && !leadSlot) body = `<div class="done"><h2>На сегодня всё</h2><p>${nextLine(nxt)}</p></div><h2 class="section-title">Пары сегодня</h2><ul class="pairs">${rows}</ul>`;
-  else body = `${lead}${rows ? `<h2 class="section-title">${leadSlot ? "Остальные пары" : "Пары"}</h2><ul class="pairs">${rows}</ul>` : ""}`;
+  else if (isToday && !leadSlot) body = `<div class="done rise" style="--i:1"><h2>На сегодня всё</h2><p>${nextLine(nxt)}</p></div><h2 class="section-title rise" style="--i:2">Пары сегодня</h2><ul class="pairs">${rows}</ul>`;
+  else body = `${lead}${rows ? `<h2 class="section-title rise" style="--i:2">${leadSlot ? "Остальные пары" : "Пары"}</h2><ul class="pairs">${rows}</ul>` : ""}`;
 
   const slide = dir ? (dir > 0 ? "slide-next" : "slide-prev") : "";
-  scheduleHost().innerHTML = `${header}${weekPicker(t)}<div class="day-body ${slide}">${strip}${body}${sourceLine()}</div>`;
+  const enter = Boolean(dir) || takeEnter();
+  scheduleHost().innerHTML = `${header}${weekPicker(t)}<div class="day-body ${slide} ${enter ? "enter" : ""}">${strip}${body}${sourceLine()}</div>`;
   state.liveSig = liveSig(nxt);
   bindSchedule(animateDay);
 }
@@ -1424,7 +1527,7 @@ function bindSchedule(animateDay = false) {
   document.getElementById("wk-prev")?.addEventListener("click", () => shiftWeek(-7));
   document.getElementById("wk-next")?.addEventListener("click", () => shiftWeek(7));
   app.querySelectorAll(".pressable[data-pair]").forEach((el) => {
-    const open = () => openPairSheet(el.dataset.date, Number(el.dataset.pair), Number(el.dataset.idx));
+    const open = () => openPairSheet(el.dataset.date, Number(el.dataset.pair), Number(el.dataset.idx), el);
     el.addEventListener("click", open);
     el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
   });
@@ -1453,13 +1556,22 @@ function selectDay(iso) {
 async function shiftWeek(delta, selectIso) {
   haptic();
   const ws = addDays(state.weekStart, delta);
+  // a week that takes a moment to load shows its skeleton instead of a screen that does not react
+  let waiting = false;
+  const slow = state.loadedWeeks.has(ws) ? 0 : setTimeout(() => {
+    const body = app.querySelector("#sched-body .day-body");
+    if (body) { waiting = true; body.innerHTML = `<div class="skeleton" role="status" aria-label="Загружаем неделю">${daySkeleton()}</div>`; }
+  }, 160);
   try {
     await loadWeek(ws);
   } catch (_) {
+    clearTimeout(slow);
+    if (waiting) renderSchedule();
     say(state.offline ? "Эта неделя не сохранена на телефоне: чтобы её открыть, нужен интернет."
       : "Не удалось загрузить неделю. Проверьте интернет.");
     return;
   }
+  clearTimeout(slow);
   state.weekStart = ws;
   const t = now();
   state.selected = selectIso || (ws === mondayOf(t.iso) ? t.iso : ws);
@@ -1547,7 +1659,48 @@ function shortSubject(name) {
   return name.replace(/\s*\(.*?\)\s*/g, " ").trim();
 }
 
+// a week of five to seven pairs gives a cell a fifth to a seventh of the screen: names shrink further
+const TINY_NAMES = [[/^математический анализ/i, "Матан"], [/^иностранный язык/i, "Ин. яз."]];
+const MINOR_WORDS = new Set(["в", "во", "на", "по", "к", "ко", "с", "со", "о", "об", "для", "из", "от", "при"]);
+/** a long word cut to its stem the Russian way, after a consonant and before a vowel: «Классическая» → «Класс.» */
+function stem(word) {
+  if (word.length <= 6 || word.endsWith(".")) return word;
+  for (let i = 3; i < word.length - 2; i++) {
+    if (!/[аеёиоуыэюяь]/i.test(word[i]) || /[аеёиоуыэюяйьъ]/i.test(word[i - 1])) continue;   // «Комп|ьютерное»
+    if (!/^(без|под|над|про|при)$/i.test(word.slice(0, i))) return word.slice(0, i) + "."; // «без.» would read as "without"
+  }
+  return word;
+}
+/** a name of several words keeps their stems, without the prepositions (Опер. сист., Теория вер. и мат. стат.):
+    unlike initials they read without knowing the course; a one-word name stays whole and hyphenates */
+function tinySubject(name) {
+  for (const [re, short] of TINY_NAMES) if (re.test(name)) return short;
+  const short = shortSubject(name);
+  const words = short.split(/\s+/).filter((w) => !MINOR_WORDS.has(w.toLowerCase()));
+  return words.length >= 2 ? words.map(stem).join(" ") : short;
+}
+
+/** soft hyphens at the syllable joints of long words (Пси-хо-ло-гия, Клас-си-чес-кая), so a narrow cell breaks
+    a word the Russian way in every browser, with or without a hyphenation dictionary */
+function syllables(text) {
+  const V = /[аеёиоуыэюя]/i, C = /[бвгджзклмнпрстфхцчшщ]/i, X = /[йьъ]/i;
+  return text.replace(/[а-яё]{5,}/gi, (w) => {
+    let out = "", from = 0;
+    for (let p = 2; p <= w.length - 2; p++) {
+      const a = w[p - 1], b = w[p];
+      if (X.test(b) || !V.test(w.slice(from, p)) || !V.test(w.slice(p))) continue;
+      const joint = (X.test(a) && C.test(b))                    // конь-ки
+        || (V.test(a) && C.test(b) && V.test(w[p + 1]))         // ма-ма
+        || (C.test(a) && C.test(b))                             // мас-са
+        || (V.test(a) && V.test(b));                            // ди-алог
+      if (joint) { out += w.slice(from, p) + "\u00ad"; from = p; }
+    }
+    return out + w.slice(from);
+  });
+}
+
 function renderWeek({ dir = 0 } = {}) {
+  takeEnter();   // the table appears whole, no cascade
   const t = now();
   const ws = state.weekStart;
   const { name, range } = weekRange(ws, t);
@@ -1562,6 +1715,8 @@ function renderWeek({ dir = 0 } = {}) {
   const times = {};
   for (const s of all) times[s.pair] = [s.start, s.end];
   const cols = Array.from({ length: maxPair }, (_, i) => i + 1);
+  const narrow = maxPair >= 5, dense = maxPair >= 6;
+  const subject = (name) => (narrow ? syllables(tinySubject(name)) : shortSubject(name));
 
   const head = `<div class="wk-corner"></div>${cols.map((p) => {
     const [a] = times[p] || PAIR_TIMES[p] || ["", ""];
@@ -1583,7 +1738,7 @@ function renderWeek({ dir = 0 } = {}) {
         <button class="wk-cell pressable ${past ? "past" : ""} ${running ? "now" : ""}" style="${hueVar(l.subject)}"
                 data-date="${iso}" data-pair="${p}" data-idx="0"
                 aria-label="${WEEKDAYS[d.getDay()]}, ${p} пара: ${esc(l.subject)}${l.room ? `, аудитория ${esc(l.room)}` : ""}">
-          <span class="wk-name">${esc(shortSubject(l.subject))}</span>
+          <span class="wk-name">${esc(subject(l.subject))}</span>
           ${l.room ? `<span class="wk-room num">${esc(l.room)}</span>` : ""}${more}
         </button>`;
     }).join("");
@@ -1599,8 +1754,8 @@ function renderWeek({ dir = 0 } = {}) {
       </div>
     </header>
     <div class="day-body ${slide}">
-      <div class="wk-scroll">
-        <div class="wk-table" style="--cols:${maxPair}" role="grid" aria-label="Расписание на неделю">${head}${rows}</div>
+      <div class="wk-wrap">
+        <div class="wk-table ${narrow ? "narrow" : ""} ${dense ? "dense" : ""}" style="--cols:${maxPair}" role="grid" aria-label="Расписание на неделю">${head}${rows}</div>
       </div>
       <p class="wk-key"><i class="wk-swatch" aria-hidden="true"></i>нет пары</p>
       ${sourceLine()}
@@ -1608,7 +1763,7 @@ function renderWeek({ dir = 0 } = {}) {
 
   bindStats(); // the week arrows
   app.querySelectorAll(".wk-cell.pressable").forEach((el) => {
-    el.addEventListener("click", () => openPairSheet(el.dataset.date, Number(el.dataset.pair), Number(el.dataset.idx)));
+    el.addEventListener("click", () => openPairSheet(el.dataset.date, Number(el.dataset.pair), Number(el.dataset.idx), el));
   });
 }
 
@@ -1673,9 +1828,12 @@ function bindDonut(root, segments, legend, { centerLabel, centerValue, unit }) {
     segs.forEach((c) => c.classList.toggle("active", Number(c.dataset.i) === i));
     rows.forEach((r) => r.classList.toggle("active", Number(r.dataset.i) === i));
     const s = segments[i];
+    const was = center.querySelector("b")?.dataset.roll;
     center.innerHTML = s
       ? `<div class="donut-text swap"><span>${esc(s.label)}</span><b class="num">${s.value}</b><small class="num">${unit(s.value)} · ${Math.round((s.value / total) * 100)}%</small></div>`
       : `<div class="donut-text swap"><span>${esc(centerLabel)}</span><b class="num">${centerValue}</b></div>`;
+    const b = center.querySelector("b");
+    if (was) rollTo(b, b.textContent, { from: was });
   };
   const pick = (i) => { haptic(); show(active === i ? -1 : i); };
   segs.forEach((c) => {
@@ -1809,7 +1967,7 @@ function renderStats({ dir = 0 } = {}) {
   ].filter(Boolean).map(([k, v]) => `<li><span>${k}</span><b class="num">${esc(v.replace(/(\d) /g, "$1 "))}</b></li>`).join(""); // "4 пары" never splits
 
   const progress = ws === thisWeek ? `
-    <section class="stat-card">
+    <section class="stat-card rise" style="--i:4">
       <div class="stat-head"><h2>Пройдено</h2><p class="num">${st.done} из ${pairs(pairsTotal)}</p></div>
       <div class="week-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${pairsTotal}" aria-valuenow="${st.done}">
         <i style="width:${(st.done / pairsTotal) * 100}%"></i>
@@ -1817,33 +1975,33 @@ function renderStats({ dir = 0 } = {}) {
     </section>` : "";
 
   scheduleHost().innerHTML = `${header}
-    <div class="day-body ${slide}">
-      <dl class="kpis">
+    <div class="day-body ${slide} ${dir || takeEnter() ? "enter" : ""}">
+      <dl class="kpis rise" style="--i:0">
         <div><dt>Пар</dt><dd class="num">${pairsTotal}</dd></div>
         <div><dt>Академ. часов</dt><dd class="num">${hoursText(acad)}</dd><small>по 45 мин</small></div>
         <div><dt>Обычных часов</dt><dd class="num">${hoursText(hours)}</dd><small>по 60 мин</small></div>
       </dl>
 
-      <section class="stat-card">
+      <section class="stat-card rise" style="--i:1">
         <div class="stat-head"><h2>Каких пар больше</h2><p>Нажмите на предмет</p></div>
         ${donutHtml(subjectSegs, { centerLabel: "Всего пар", centerValue: pairsTotal })}
         <ul class="legend">${legend}</ul>
       </section>
 
-      <section class="stat-card">
+      <section class="stat-card rise" style="--i:2">
         <div class="stat-head"><h2>Лекции и практика</h2></div>
         <div class="kind-bar" aria-hidden="true">${kindBar}</div>
         <div class="kind-legend">${kindLegend}</div>
       </section>
 
-      <section class="stat-card">
+      <section class="stat-card rise" style="--i:3">
         <div class="stat-head"><h2>Нагрузка по дням</h2></div>
         <div class="load">${load}</div>
       </section>
 
       ${progress}
 
-      <section class="stat-card">
+      <section class="stat-card rise" style="--i:5">
         <div class="stat-head"><h2>Факты недели</h2></div>
         <ul class="rows facts-list">${facts}</ul>
       </section>
@@ -1854,6 +2012,8 @@ function renderStats({ dir = 0 } = {}) {
   bindDonut(card, subjectSegs, card.querySelector(".legend"), {
     centerLabel: "Всего пар", centerValue: pairsTotal, unit: pairUnit,
   });
+  scheduleHost().querySelectorAll(".kpis dd, .load-col .n, .donut-text b").forEach((el) =>
+    rollTo(el, el.textContent, { from: el.textContent.replace(/\d/g, "0") }));
   bindStats();
 }
 
@@ -1864,32 +2024,149 @@ function bindStats() {
 
 /* ---------- bottom sheet ---------- */
 
+/* The sheet slides up over the page, and the page steps back under it (#app shrinks a little, --sheet-p).
+   A sheet opened from a pair's card grows out of that card and folds back into it on close (a view
+   transition morphs the one into the other); the card's place stays empty while the sheet is up.
+   The panel follows a finger pulling it down from its top: a flick or a long pull lets it go, a short one
+   springs back; a locked sheet only gives a little. */
+
 const sheet = document.getElementById("sheet");
+const sheetPanel = sheet.querySelector(".sheet-panel");
+const sheetScrim = sheet.querySelector(".sheet-scrim");
 let backBeforeSheet = null; // what Telegram's back button did before the sheet took it over
-function openSheet(html, bind, { locked = false } = {}) {
-  hidePointer();
-  const panel = sheet.querySelector(".sheet-panel");
-  panel.innerHTML = `<div class="grabber" aria-hidden="true"></div>${html}`;
-  sheet.classList.remove("closing");
-  sheet.classList.toggle("locked", locked);
-  sheet.hidden = false;
-  if (backHandler !== closeSheet) backBeforeSheet = backHandler;
-  setBack(locked ? null : closeSheet);
-  bind?.(panel);
+let sheetFrom = null;       // the card a pair sheet grew out of, as a selector: a re-render may replace the element
+let closeTimer = 0;
+const canMorph = () => Boolean(document.startViewTransition) && !reduceMotion.matches;
+const onScreen = (el) => { const r = el.getBoundingClientRect(); return r.bottom > 0 && r.top < innerHeight && r.height > 0; };
+
+/** p = 1: the page sits back under an open sheet; 0: in place; a drag passes through the values between */
+function pageBack(p) {
+  const root = document.documentElement;
+  if (p > 0 && !root.classList.contains("sheet-open")) root.style.setProperty("--sheet-origin", `${scrollY + innerHeight / 2 - app.offsetTop}px`);
+  root.classList.toggle("sheet-open", p > 0);
+  root.style.setProperty("--sheet-p", String(p));
 }
-/** force: close a locked sheet too (its own button does that) */
-function closeSheet(force) {
+
+/** one view transition: the card becomes the sheet's panel (open), or the panel the card */
+function morph(card, update, open) {
+  const root = document.documentElement;
+  root.classList.add("vt-morph");
+  card.classList.toggle("lifted", !open);   // folding back, the card is not on the page until the panel lands
+  (open ? card : sheetPanel).style.viewTransitionName = "pair-card";
+  const t = document.startViewTransition(() => {
+    (open ? card : sheetPanel).style.viewTransitionName = "";
+    update();
+    (open ? sheetPanel : card).style.viewTransitionName = "pair-card";
+    card.classList.toggle("lifted", open);
+  });
+  t.finished.finally(() => {
+    root.classList.remove("vt-morph");
+    card.style.viewTransitionName = "";
+    sheetPanel.style.viewTransitionName = "";
+  });
+}
+
+/** from: the card the sheet grows out of (a pair's) */
+function openSheet(html, bind, { locked = false, from = null } = {}) {
+  hidePointer();
+  const fresh = sheet.hidden || sheet.classList.contains("closing");
+  const fill = (slide) => {
+    clearTimeout(closeTimer);
+    sheetPanel.innerHTML = `<div class="grabber" aria-hidden="true"></div>${html}`;
+    sheetPanel.style.transform = sheetPanel.style.transition = "";
+    sheetScrim.style.opacity = sheetScrim.style.transition = "";
+    sheet.classList.remove("closing");
+    sheet.classList.toggle("locked", locked);
+    if (slide) sheet.classList.add("entering");
+    sheet.hidden = false;
+    if (fresh) pageBack(1);
+    if (slide) { void sheetPanel.offsetHeight; sheet.classList.remove("entering"); }
+    if (backHandler !== closeSheet) backBeforeSheet = backHandler;
+    setBack(locked ? null : closeSheet);
+    bind?.(sheetPanel);
+  };
+  if (!fresh) return fill(false);
+  sheetFrom = null;
+  if (from?.isConnected && canMorph() && onScreen(from)) {
+    sheetFrom = `[data-date="${from.dataset.date}"][data-pair="${from.dataset.pair}"][data-idx="${from.dataset.idx}"]`;
+    return morph(from, () => fill(false), true);
+  }
+  fill(true);
+}
+
+/** force: close a locked sheet too (its own button does that); fling: the finger's speed, px/ms, when it threw the sheet away */
+function closeSheet(force, { fling = 0 } = {}) {
   if (sheet.hidden || sheet.classList.contains("closing")) return;
   if (sheet.classList.contains("locked") && force !== true) return;
   hidePointer();
   sheet.classList.remove("locked");
-  sheet.classList.add("closing");
   setBack(backBeforeSheet);
   backBeforeSheet = null;
-  setTimeout(() => { sheet.hidden = true; sheet.classList.remove("closing"); }, reduceMotion.matches ? 0 : 200);
+  const card = sheetFrom && app.querySelector(sheetFrom);
+  sheetFrom = null;
+  const done = () => { sheet.hidden = true; sheet.classList.remove("closing"); };
+  if (card && !fling && canMorph() && onScreen(card)) return morph(card, () => { done(); pageBack(0); }, false);
+  app.querySelectorAll(".lifted").forEach((el) => el.classList.remove("lifted"));
+  pageBack(0);
+  let ms = 260;
+  if (fling) {   // it keeps the speed it was thrown with
+    const left = sheetPanel.offsetHeight - (new DOMMatrix(getComputedStyle(sheetPanel).transform).m42 || 0);
+    ms = Math.round(Math.min(320, Math.max(140, left / Math.max(fling, 1.2))));
+    sheetPanel.style.transition = `transform ${ms}ms cubic-bezier(0.25, 0.6, 0.4, 1)`;
+    sheetScrim.style.transition = `opacity ${ms}ms linear`;
+  }
+  sheetPanel.style.transform = sheetScrim.style.opacity = "";
+  sheet.classList.add("closing");
+  clearTimeout(closeTimer);
+  closeTimer = setTimeout(done, reduceMotion.matches ? 0 : ms);
 }
 sheet.addEventListener("click", (e) => { if (e.target.hasAttribute("data-close")) closeSheet(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
+
+let sheetDrag = null;
+sheetPanel.addEventListener("touchstart", (e) => {
+  sheetDrag = e.touches.length === 1 && sheetPanel.scrollTop <= 0 && !sheet.classList.contains("closing")
+    ? { y0: e.touches[0].clientY, dy: 0, on: false, track: [] } : null;
+}, { passive: true });
+sheetPanel.addEventListener("touchmove", (e) => {
+  const d = sheetDrag;
+  if (!d) return;
+  const y = e.touches[0].clientY;
+  if (!d.on) {
+    if (y - d.y0 < -4) { sheetDrag = null; return; }   // upward: the panel scrolls its own content
+    if (y - d.y0 < 8) return;
+    d.on = true;
+    d.y0 = y;
+    sheetPanel.style.transition = sheetScrim.style.transition = "none";
+    document.documentElement.classList.add("sheet-dragging");
+  }
+  e.preventDefault();
+  const pull = Math.max(0, y - d.y0);
+  d.dy = sheet.classList.contains("locked") ? 36 * Math.log1p(pull / 36) : pull;
+  const t = performance.now();
+  d.track.push([t, d.dy]);
+  while (d.track.length > 2 && t - d.track[0][0] > 90) d.track.shift();
+  const p = 1 - Math.min(1, d.dy / sheetPanel.offsetHeight);
+  sheetPanel.style.transform = `translateY(${d.dy}px)`;
+  sheetScrim.style.opacity = String(p);
+  document.documentElement.style.setProperty("--sheet-p", String(p));
+}, { passive: false });
+const releaseSheet = () => {
+  const d = sheetDrag;
+  sheetDrag = null;
+  if (!d?.on) return;
+  document.documentElement.classList.remove("sheet-dragging");
+  const [t0, y0] = d.track[0], [t1, y1] = d.track[d.track.length - 1];
+  const v = t1 > t0 ? (y1 - y0) / (t1 - t0) : 0;
+  sheetPanel.style.transition = sheetScrim.style.transition = "";
+  if (!sheet.classList.contains("locked") && (d.dy > sheetPanel.offsetHeight * 0.3 || (v > 0.45 && d.dy > 30))) {
+    return closeSheet(false, { fling: Math.max(v, 0.01) });
+  }
+  sheetPanel.style.transform = sheetScrim.style.opacity = "";   // back up: the panel's own transition carries it
+  document.documentElement.style.setProperty("--sheet-p", "1");
+};
+sheetPanel.addEventListener("touchend", releaseSheet);
+sheetPanel.addEventListener("touchcancel", releaseSheet);
 
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); return true; } catch (_) {}
@@ -1909,10 +2186,24 @@ function findLesson(date, pair, idx) {
 
 /* ---------- pair details ---------- */
 
-function openPairSheet(date, pair, idx) {
+/** a button's label swaps with a fade, and its icon plays the scene of `mode` (.btn-ico.ok, .done) */
+function btnState(btn, label, mode) {
+  const lbl = btn.querySelector(".lbl");
+  lbl.textContent = label;
+  lbl.classList.remove("swap-in");
+  void lbl.offsetWidth;
+  lbl.classList.add("swap-in");
+  btn.classList.remove("ok", "done");
+  if (mode) btn.classList.add(mode);
+}
+let freshReminder = null;   // the reminder just set: its tag on the card pops in
+
+/** from: the card it was opened from, which grows into the sheet */
+function openPairSheet(date, pair, idx, from = null) {
   const l = findLesson(date, pair, idx);
   if (!l) return;
-  if (sheet.hidden) haptic();
+  const fresh = sheet.hidden;
+  if (fresh) haptic();
   const t = now();
   const started = date < t.iso || (date === t.iso && t.min >= toMin(l.start));
   const ended = date < t.iso || (date === t.iso && t.min >= toMin(l.end));
@@ -1934,17 +2225,26 @@ function openPairSheet(date, pair, idx) {
     </ul>
     <div class="sheet-actions">
       ${started ? "" : rem
-        ? `<button class="btn secondary" id="remind">Не напоминать</button>`
-        : `<button class="btn" id="remind">Напомнить за 10 минут</button>`}
-      <button class="btn secondary" id="copy">Скопировать</button>
+        ? `<button class="btn secondary btn-ico" id="remind"><span class="ico">${icon.bell}</span><span class="lbl">Не напоминать</span></button>`
+        : `<button class="btn btn-ico" id="remind"><span class="ico">${icon.bell}${icon.tick}</span><span class="lbl">Напомнить за 10 минут</span></button>`}
+      <button class="btn secondary btn-ico" id="copy"><span class="ico">${icon.copy}${icon.tick}</span><span class="lbl">Скопировать</span></button>
     </div>
     <p class="btn-note" id="sheet-note" aria-live="polite">${note}</p>`, (panel) => {
     const noteEl = panel.querySelector("#sheet-note");
-    panel.querySelector("#copy").addEventListener("click", async () => {
+    // the subject's mark plays its scene as the sheet settles, and again when tapped
+    const mark = panel.querySelector(".sheet-mark");
+    if (fresh) setTimeout(() => playMark(mark), 300);
+    mark.addEventListener("click", () => { haptic(); playMark(mark); });
+    panel.querySelector("#copy").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
       const text = `${when} — ${l.subject}${kind ? ` (${kind.toLowerCase()})` : ""}${l.room ? `, ауд. ${l.room}` : ""}${l.teacher ? `, ${l.teacher}` : ""}`;
       const ok = await copyText(text);
-      noteEl.textContent = ok ? "Скопировано." : "Не получилось скопировать.";
       haptic(ok ? "success" : "error");
+      if (!ok) { noteEl.textContent = "Не получилось скопировать."; return; }
+      // the two sheets turn into a check for a moment
+      btnState(btn, "Скопировано", "ok");
+      clearTimeout(btn.timer);
+      btn.timer = setTimeout(() => btnState(btn, "Скопировать", ""), 1800);
     });
     panel.querySelector("#remind")?.addEventListener("click", async (e) => {
       const btn = e.currentTarget;
@@ -1958,10 +2258,16 @@ function openPairSheet(date, pair, idx) {
         } else {
           const r = await api("/api/reminders", { method: "POST", body: JSON.stringify({ date, start: l.start, subject: l.subject }) });
           state.reminders.set(key, r);
+          freshReminder = key;   // the card's «напомню» pops in once the sheet is down
+          // the bell rings and a check is drawn before the sheet turns into «Не напоминать»
+          btnState(btn, "Напомню", "done");
+          haptic("success");
+          await new Promise((r) => setTimeout(r, reduceMotion.matches ? 0 : 1000));
         }
         haptic("success");
-        openPairSheet(date, pair, idx);
+        if (!sheet.hidden && sheetPanel.contains(btn)) openPairSheet(date, pair, idx);
         if (state.tab === "schedule") renderSchedule();
+        freshReminder = null;
       } catch (err) {
         btn.disabled = false;
         noteEl.textContent = err instanceof HttpError && err.status === 400
@@ -1969,15 +2275,17 @@ function openPairSheet(date, pair, idx) {
         haptic("error");
       }
     });
-  });
+  }, { from });
 }
 
 /* ---------- empty states: one line drawing each, in the same hand as the subject marks ---------- */
 
+// and each comes alive: the clubhouse is drawn and its flag waves, the two friends are drawn and the plus
+// beckons, the sun rises over the waves and its rays turn (.art parts, app.css)
 const ART = {
-  clubs: '<path d="M30 30 60 14l30 16M28 30h64M36 34v22M48 34v22M72 34v22M84 34v22M26 62h68M56 62V52a4 4 0 0 1 8 0v10M60 14V4"/><path class="hi" d="M60 4h11l-3 3.5 3 3.5H60"/>',
-  friends: '<circle cx="46" cy="24" r="9"/><path d="M28 62c2-12 9-19 18-19s16 7 18 19"/><circle cx="74" cy="29" r="7"/><path d="M66 47c2.4-3 5-4.5 8-4.5 7 0 12 6 14 17"/><path class="hi" d="M98 14v12M92 20h12"/>',
-  free: '<circle class="hi" cx="60" cy="32" r="11"/><path class="hi" d="M60 10V5M37 32h-5M88 32h-5M44 16l-3.5-3.5M76 16l3.5-3.5"/><path d="M18 52c5-4 10-4 15 0s10 4 15 0 10-4 15 0 10 4 15 0 10-4 15 0 10 4 15 0"/><path d="M28 62c5-4 10-4 15 0s10 4 15 0 10-4 15 0 10 4 15 0 10-4 15 0"/>',
+  clubs: '<path class="a-draw" pathLength="1" d="M30 30 60 14l30 16M28 30h64M36 34v22M48 34v22M72 34v22M84 34v22M26 62h68M56 62V52a4 4 0 0 1 8 0v10M60 14V4"/><path class="hi a-flag" d="M60 4h11l-3 3.5 3 3.5H60"/>',
+  friends: '<circle class="a-draw" pathLength="1" cx="46" cy="24" r="9"/><path class="a-draw" pathLength="1" d="M28 62c2-12 9-19 18-19s16 7 18 19"/><circle class="a-draw d2" pathLength="1" cx="74" cy="29" r="7"/><path class="a-draw d2" pathLength="1" d="M66 47c2.4-3 5-4.5 8-4.5 7 0 12 6 14 17"/><path class="hi a-plus" d="M98 14v12M92 20h12"/>',
+  free: '<circle class="hi a-sun" cx="60" cy="32" r="11"/><path class="hi a-rays" d="M60 10V5M37 32h-5M88 32h-5M44 16l-3.5-3.5M76 16l3.5-3.5"/><path class="a-wave" d="M18 52c5-4 10-4 15 0s10 4 15 0 10-4 15 0 10 4 15 0 10-4 15 0 10 4 15 0"/><path class="a-wave w2" d="M28 62c5-4 10-4 15 0s10 4 15 0 10-4 15 0 10 4 15 0 10-4 15 0"/>',
 };
 const emptyState = (art, title, text) => `
   <div class="empty-state">
@@ -1993,12 +2301,19 @@ async function loadUnread() {
 }
 const bellButton = () => `
   <button class="bell" id="bell" aria-label="Уведомления">${icon.bell}<span class="bell-badge num" hidden></span></button>`;
+let bellRung = 0;   // the count the bell last rang for: it rings for news, not every time it is drawn
 function updateBell() {
   const bell = document.getElementById("bell");
   if (!bell) return;
   const badge = bell.querySelector(".bell-badge");
   badge.hidden = !state.unread;
   badge.textContent = state.unread > 99 ? "99+" : String(state.unread);
+  if (state.unread > bellRung && !reduceMotion.matches) {
+    bell.classList.remove("ring");
+    void bell.offsetWidth;
+    bell.classList.add("ring");
+  }
+  bellRung = state.unread;
   bell.setAttribute("aria-label", state.unread ? `Уведомления, новых: ${state.unread}` : "Уведомления");
 }
 
@@ -2364,6 +2679,27 @@ async function clubAct(b, request, after) {
     say(errText(e));
   }
 }
+/** joining (or asking to join): the button folds into a round check, the club's avatar hops and a ring spreads
+    from it; then the page redraws as a member's */
+async function clubJoin(b, request) {
+  b.disabled = true;
+  try {
+    const data = await request();
+    haptic("success");
+    if (!reduceMotion.matches) {
+      b.classList.add("joined");
+      b.innerHTML = `<span class="ico">${icon.tick}</span>`;
+      b.setAttribute("aria-label", "Готово");
+      app.querySelector(".club-hero .avatar")?.classList.add("hop");
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    clubUpdated(data);
+  } catch (e) {
+    haptic("error");
+    b.disabled = false;
+    say(errText(e));
+  }
+}
 function clubToList() {
   state.clubView = null;
   window.scrollTo(0, 0);
@@ -2431,11 +2767,11 @@ async function renderClubPage() {
     renderClubSection();
   });
   document.getElementById("club-join")?.addEventListener("click", (e) =>
-    clubAct(e.currentTarget, () => api(`${base}/join`, { method: "POST" }), clubUpdated));
+    clubJoin(e.currentTarget, () => api(`${base}/join`, { method: "POST" })));
   document.getElementById("club-decline")?.addEventListener("click", (e) =>
     clubAct(e.currentTarget, () => api(`${base}/invites/${state.me.tg_id}`, { method: "DELETE" }), clubToList));
   document.getElementById("club-request")?.addEventListener("click", (e) =>
-    clubAct(e.currentTarget, () => api(`${base}/request`, { method: "POST" }), clubUpdated));
+    clubJoin(e.currentTarget, () => api(`${base}/request`, { method: "POST" })));
   document.getElementById("club-unrequest")?.addEventListener("click", (e) =>
     clubAct(e.currentTarget, () => api(`${base}/request`, { method: "DELETE" }), clubUpdated));
   document.getElementById("club-chat")?.addEventListener("click", () => { haptic(); openOut(c.chat_url); });
@@ -3200,10 +3536,12 @@ function renderClubForm() {
 
 /* ---------- screen: profile ---------- */
 
+// each glyph has named parts for the scene it plays when tapped: the sliders' knobs slide, the person twitches,
+// the two friends hop one after the other
 const PROFILE_VIEWS = [
-  ["settings", "Настройки", '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>'],
-  ["profile", "Профиль", '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c1.2-3.6 3.8-5.5 7-5.5s5.8 1.9 7 5.5"/>'],
-  ["friends", "Друзья", '<circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5c.9-3 3-4.6 5.5-4.6s4.6 1.6 5.5 4.6M15.5 5.6a3 3 0 0 1 0 5.8M17 14.9c1.8.4 3 1.9 3.6 4.6"/>'],
+  ["settings", "Настройки", '<path d="M4 7h16M4 17h16"/><circle class="knob" cx="15" cy="7" r="2.3"/><circle class="knob k2" cx="9" cy="17" r="2.3"/>'],
+  ["profile", "Профиль", '<g class="me"><circle class="me-head" cx="12" cy="8" r="3.5"/><path d="M5 20c1.2-3.6 3.8-5.5 7-5.5s5.8 1.9 7 5.5"/></g>'],
+  ["friends", "Друзья", '<g class="fr"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5c.9-3 3-4.6 5.5-4.6s4.6 1.6 5.5 4.6"/></g><g class="fr f2"><path d="M15.5 5.6a3 3 0 0 1 0 5.8M17 14.9c1.8.4 3 1.9 3.6 4.6"/></g>'],
 ];
 
 function renderProfile() {
@@ -3246,7 +3584,6 @@ function bindProfileBody() {
   const st = state.settings;
   app.querySelector('[data-set="remind_all"]')?.addEventListener("click", () => { haptic(); saveSetting({ remind_all: !st.remind_all }); });
   app.querySelector('[data-set="show_club"]')?.addEventListener("click", () => { haptic(); saveSetting({ show_club: !st.show_club }); });
-  app.querySelector('[data-set="bot_week"]')?.addEventListener("click", () => { haptic(); saveSetting({ bot_week: !st.bot_week }); });
   app.querySelectorAll("[data-lead]").forEach((b) => b.addEventListener("click", () => { haptic(); saveSetting({ remind_lead: Number(b.dataset.lead) }); }));
   app.querySelector('[data-set="digest"]')?.addEventListener("click", () => { haptic(); saveSetting({ digest_time: st.digest_time ? "off" : "07:30" }); });
   app.querySelectorAll("[data-digest]").forEach((b) => b.addEventListener("click", () => { haptic(); saveSetting({ digest_time: b.dataset.digest }); }));
@@ -3803,14 +4140,19 @@ async function saveSetting(patch) {
   const before = { ...state.settings };
   Object.assign(state.settings, patch, patch.digest_time === "off" ? { digest_time: null } : {});
   updateProfileBody();
+  app.querySelector(`[role="switch"][data-set="${Object.keys(patch)[0]}"]`)?.classList.add("toggled");
+  const shown = JSON.stringify(state.settings);
   try {
     state.settings = await api("/api/settings", { method: "POST", body: JSON.stringify(patch) });
   } catch (e) {
     state.settings = before;
     say(errText(e, "Не получилось сохранить настройку. Проверьте интернет и попробуйте ещё раз."));
   }
-  updateProfileBody();
+  // redrawn only if the server's answer differs, so the switch's own movement plays out
+  if (JSON.stringify(state.settings) !== shown) updateProfileBody();
 }
+// a switch flipped in place (a post's options) squashes on its way too
+document.addEventListener("click", (e) => e.target.closest?.('[role="switch"]')?.classList.add("toggled"), true);
 
 const switchRow = (id, label, hint, on) => `
   <li><button type="button" data-set="${id}" role="switch" aria-checked="${on}">
@@ -3831,7 +4173,6 @@ function notificationsSection() {
       ${st.remind_all ? chipsRow("Заранее", leads) : ""}
       ${switchRow("digest", "Утренняя сводка", "Пары на день; в дни без пар бот молчит", Boolean(st.digest_time))}
       ${st.digest_time ? chipsRow("Во сколько", times) : ""}
-      ${switchRow("bot_week", "Неделя в чате с ботом", "Пары на неделю закреплены в чате и видны даже без интернета", st.bot_week)}
     </ul>`;
 }
 
@@ -3962,11 +4303,13 @@ function switchTheme(pref, x, y) {
   const swap = () => { setTheme(pref); updateProfileBody(); };
   if (!document.startViewTransition || reduceMotion.matches) return swap();
   const r = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
+  document.documentElement.classList.add("vt-theme");
   const t = document.startViewTransition(swap);
   t.ready.then(() => document.documentElement.animate(
     { clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${r}px at ${x}px ${y}px)`] },
     { duration: 560, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)", pseudoElement: "::view-transition-new(root)" },
   )).catch(() => {});
+  t.finished.finally(() => document.documentElement.classList.remove("vt-theme"));
 }
 
 /* ---------- semester progress: one segment per week, green to yellow to red towards the session ----------
@@ -4040,18 +4383,10 @@ function bindSemester() {
   const s = semesterInfo();
   const target = Number(pct.dataset.value);
 
-  // fill one by one, and count the percentage up (ease-out cubic, 800 ms)
+  // fill one by one, and roll the percentage up from zero like a counter's drums
   requestAnimationFrame(() => segs.forEach((el) => el.classList.toggle("on", el.dataset.filled === "true")));
-  if (reduceMotion.matches) pct.textContent = `${Math.round(target)}%`;
-  else {
-    const t0 = performance.now();
-    const step = (time) => {
-      const p = Math.min(1, (time - t0) / 800);
-      pct.textContent = `${Math.round(target * (1 - Math.pow(1 - p, 3)))}%`;
-      if (p < 1 && pct.isConnected) requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
-  }
+  const text = `${Math.round(target)}%`;
+  rollTo(pct, text, { from: text.replace(/\d/g, "0") });
 
   // the mouse lifts the segment under it and, less, its neighbours
   const lift = (at) => segs.forEach((el, i) => {
@@ -4106,13 +4441,152 @@ function profileView() {
 
 
 
+/* ---------- launch: instead of a loading screen, a greeting in the student's own direction ----------
+   Maths («Прикладная математика и информатика»): the RainingLetters + TextScramble component (React) ported
+   to a canvas, mathematical symbols falling in italic serif the way formulas are typeset; in a clearing in the
+   middle the greeting decodes line by line: «Приветствую, Анна», «Студент 1 курса», the direction.
+   The app loads underneath and comes up with its cascade once both are done; a tap skips. It knows whom to
+   greet from the last launch (GREET_KEY), so it starts before the network answers. Other directions get their
+   own later: directionFx() names the scene. */
+
+const GREET_KEY = "msu.greet";
+const MATH_SYMBOLS = "∑∫∮∂∞πλθφΔ∇√≈≠≡≤≥±×÷∈∉∀∃∅ℝℕℤℚ⊂∪∩→⇔xyznkfg012345679()[]{}<>=+−^!";
+const SCRAMBLE_CHARS = "∑∫∂∞π√≈≠≤≥∈∀∃ΔλθΩ<>{}[]=+−^";
+
+function directionFx(faculty) {
+  return /математик|информатик/i.test(faculty || "") ? "math" : null;
+}
+
+function rememberGreeting(me) {
+  const g = me?.group;
+  try {
+    if (g) localStorage.setItem(GREET_KEY, JSON.stringify({
+      name: (me.real_name || me.first_name || "").trim().split(/\s+/)[0], course: g.course, master: Boolean(g.is_master), faculty: g.faculty,
+    }));
+    else localStorage.removeItem(GREET_KEY);
+  } catch (_) {}
+}
+const forgetGreeting = () => { try { localStorage.removeItem(GREET_KEY); } catch (_) {} };
+
+/** the greeting over the loading app, for a student whose direction has one: { ready() } to call once the app
+    is drawn underneath, or null (no scene, first launch, or the phone asks for less motion) */
+function playLaunchIntro() {
+  let who = null;
+  try { who = JSON.parse(localStorage.getItem(GREET_KEY) || "null"); } catch (_) {}
+  if (!who || directionFx(who.faculty) !== "math" || reduceMotion.matches) return null;
+  const lines = [
+    who.name ? `Приветствую, ${who.name}` : "Приветствую",
+    `Студент ${who.course} курса${who.master ? " магистратуры" : ""}`,
+    who.faculty,
+  ];
+  const fx = document.createElement("div");
+  fx.className = "fx-overlay";
+  fx.innerHTML = `<canvas aria-hidden="true"></canvas>
+    <div class="fx-greet" role="status" aria-label="${esc(lines.join(". "))}">
+      <p class="fx-title" aria-hidden="true"></p><p class="fx-line" aria-hidden="true"></p><p class="fx-dir" aria-hidden="true"></p>
+    </div>
+    <p class="fx-hint">Нажмите, чтобы пропустить</p>`;
+  document.body.append(fx);
+
+  const css = getComputedStyle(document.documentElement);
+  const faint = css.getPropertyValue("--faint").trim(), accent = css.getPropertyValue("--accent").trim();
+  const canvas = fx.querySelector("canvas");
+  const ctx = canvas.getContext("2d");
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const w = innerWidth, h = innerHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  ctx.scale(dpr, dpr);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  const pick = (str) => str[Math.floor(Math.random() * str.length)];
+  const drops = Array.from({ length: Math.round((w * h) / 2600) }, () => ({
+    ch: pick(MATH_SYMBOLS), x: Math.random() * w, y: Math.random() * h,
+    v: h * (0.22 + Math.random() * 0.45), // px per second
+  }));
+  let lit = new Set();
+  let lastFlicker = 0, last = performance.now(), raf = 0, done = false;
+  const draw = (time) => {
+    const dt = Math.min(0.05, (time - last) / 1000);
+    last = time;
+    if (time - lastFlicker > 60) { // a few symbols light up at a time, as in the original
+      lit = new Set(Array.from({ length: 3 + Math.floor(Math.random() * 4) }, () => Math.floor(Math.random() * drops.length)));
+      lastFlicker = time;
+    }
+    ctx.clearRect(0, 0, w, h);
+    drops.forEach((d, i) => {
+      d.y += d.v * dt;
+      if (d.y > h + 24) { d.y = -24; d.x = Math.random() * w; d.ch = pick(MATH_SYMBOLS); }
+      const on = lit.has(i);
+      ctx.font = `italic ${on ? 30 : 24}px "Cambria Math", "STIX Two Math", "Times New Roman", serif`;
+      ctx.globalAlpha = on ? 1 : 0.38;
+      ctx.fillStyle = on ? accent : faint;
+      ctx.shadowColor = accent;
+      ctx.shadowBlur = on ? 14 : 0;
+      ctx.fillText(d.ch, d.x, d.y);
+    });
+    if (!done) raf = requestAnimationFrame(draw);
+  };
+  raf = requestAnimationFrame(draw);
+
+  let shown = false, loaded = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    fx.classList.add("out");
+    setTimeout(() => { cancelAnimationFrame(raf); fx.remove(); }, 420);
+    // the day underneath comes up with its cascade as the rain clears
+    const body = app.querySelector(".day-body");
+    if (body?.querySelector(".rise")) { body.classList.remove("enter", "slide-next", "slide-prev"); void body.offsetWidth; body.classList.add("enter"); }
+  };
+  const settle = () => { if (shown && loaded) finish(); };
+  fx.addEventListener("click", () => { haptic(); finish(); });
+  const [title, line, dir] = fx.querySelectorAll(".fx-greet p");
+  Promise.all([scramble(title, lines[0]), scramble(line, lines[1], 380), scramble(dir, lines[2], 640)])
+    .then(() => setTimeout(() => { shown = true; settle(); }, 1200));
+  setTimeout(finish, 6000); // never left covering the app, even if frames stall or the network hangs
+  return { ready() { loaded = true; settle(); } };
+}
+
+/** TextScramble: each letter flickers through symbols, then settles, at its own random moment, after `delay` ms */
+function scramble(el, text, delay = 0) {
+  return new Promise((resolve) => {
+    const queue = [...text].map((to) => {
+      if (to === " ") return { to, start: 0, end: 0, ch: "" }; // spaces stay put, so the text wraps as it will settle
+      const start = Math.floor(Math.random() * 28);
+      return { to, start, end: start + 10 + Math.floor(Math.random() * 30), ch: "" };
+    });
+    const t0 = performance.now() + delay;
+    const tick = () => {
+      const frame = Math.floor((performance.now() - t0) / 16.7); // time, not painted frames: a slow device still finishes on time
+      let out = "", complete = 0;
+      for (const q of queue) {
+        if (frame >= q.end) { complete++; out += esc(q.to); }
+        else if (frame >= q.start) {
+          if (!q.ch || Math.random() < 0.28) q.ch = SCRAMBLE_CHARS[Math.floor(Math.random() * SCRAMBLE_CHARS.length)];
+          out += `<span class="dud">${esc(q.ch)}</span>`;
+        } else out += q.to === " " ? " " : `<span class="wait">${esc(q.to)}</span>`;
+      }
+      el.innerHTML = out;
+      if (complete === queue.length) return resolve();
+      requestAnimationFrame(tick);
+    };
+    tick();
+  });
+}
+
 /* ---------- boot ---------- */
 
-async function boot() {
+async function boot({ greet = true } = {}) {
   applyTheme();
   setupTelegram();
   registerWorker();
   renderLoading();
+  const intro = greet ? playLaunchIntro() : null;   // the greeting covers the loading, then lets the app up
+  try { await load(); } finally { intro?.ready(); }
+}
+
+async function load() {
   // inside another app's browser the one-time sign-in is kept for Safari or Chrome, where the app can be installed
   if (inOtherApp && /^#login=[\w-]+\.[\w-]+$/.test(location.hash)) return renderOpenOutside();
   const handoff = inTelegram ? null : await takeHandoff();
@@ -4121,6 +4595,7 @@ async function boot() {
     state.me = me;
     state.catalog = catalog;
     state.scheduleView = viewPref();
+    rememberGreeting(me.onboarded ? me : null);
     if (!me.onboarded) return startOnboarding(false);   // the consent tick waits on its last step
     if (!me.consent) return askConsent();              // signed up before the consent was asked for, or before its new edition
     await resolveAvatar(me);
@@ -4133,7 +4608,7 @@ async function boot() {
     if (state.signingIn) return;
     if (e instanceof HttpError && e.status === 401 && !inTelegram) return renderSignIn(handoff?.note || "");
     console.error(e);
-    renderError(e, boot);
+    renderError(e, () => boot({ greet: false }));
   }
 }
 
@@ -4151,10 +4626,12 @@ function startLive() {
   }, FRIENDS_POLL);
 }
 
-// keep "now" honest while the app stays open: tick the lead card, redraw when the pair changes
+// keep "now" honest while the app stays open: every second the running pair's bar creeps on and the now-line
+// with it; the minutes left roll over on the lead card; the day redraws when the pair changes
 setInterval(() => {
   if (state.ob || state.tab !== "schedule" || state.scheduleView !== "day" || !state.selected) return;
-  const t = now();
+  if (document.visibilityState !== "visible") return;
+  const t = nowPrecise();
   const nxt = nextPair();
   if (liveSig(nxt) !== state.liveSig) {
     const y = window.scrollY;
@@ -4163,7 +4640,7 @@ setInterval(() => {
     return;
   }
   const status = document.getElementById("lead-status");
-  if (status && nxt) status.querySelector("span").textContent = statusText(nxt);
+  if (status && nxt) rollTo(status.querySelector("span"), statusText(nxt));
   const bar = document.getElementById("lead-bar");
   if (bar && nxt?.running) bar.style.width = `${progressOf(nxt, t)}%`;
   const strip = app.querySelector(".strip");
@@ -4173,8 +4650,9 @@ setInterval(() => {
     const p = ((t.min - from) / (to - from)) * 100;
     line.style.left = `${p}%`;
     label.style.left = `${Math.min(94, Math.max(6, p))}%`;
-    label.textContent = hm(t.min);
+    const text = hm(Math.floor(t.min));
+    if (label.textContent !== text) label.textContent = text;
   }
-}, 10 * 1000);
+}, 1000);
 
 boot();
