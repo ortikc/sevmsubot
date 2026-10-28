@@ -1215,9 +1215,14 @@ html.vt-morph .mini-head { view-transition-name: mini-head; }
 html.vt-morph .sheet-scrim { view-transition-name: scrim; transition: none; }
 html.vt-morph .sheet-panel { transition: none; }
 html.vt-morph::view-transition-group(*) { animation-duration: 460ms; animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1); }
-html.vt-morph::view-transition-group(pair-card) { overflow: clip; border-radius: 20px; }
-html.vt-morph::view-transition-old(pair-card) { animation: vt-out 200ms ease both; mix-blend-mode: normal; }
-html.vt-morph::view-transition-new(pair-card) { animation: vt-in 260ms 70ms ease both; mix-blend-mode: normal; }
+/* card and panel are drawn at their own size, pinned to the top, inside the growing box: the panel unfolds out of
+   the card instead of being squeezed into it. The box clips them with corners that morph from the card's to the
+   panel's (morph() animates its clip-path): overflow on these boxes is not honoured everywhere */
+html.vt-morph::view-transition-old(pair-card), html.vt-morph::view-transition-new(pair-card) {
+  height: 100%; object-fit: none; object-position: 50% 0; mix-blend-mode: normal;
+}
+html.vt-morph::view-transition-old(pair-card) { animation: vt-out 200ms ease both; }
+html.vt-morph::view-transition-new(pair-card) { animation: vt-in 260ms 70ms ease both; }
 @keyframes vt-out { to { opacity: 0; } }
 @keyframes vt-in { from { opacity: 0; } }
 .grabber { width: 38px; height: 4px; margin: 0 auto 18px; border-radius: 2px; background: var(--raised); }

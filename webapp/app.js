@@ -2053,13 +2053,24 @@ function morph(card, update, open) {
   root.classList.add("vt-morph");
   card.classList.toggle("lifted", !open);   // folding back, the card is not on the page until the panel lands
   (open ? card : sheetPanel).style.viewTransitionName = "pair-card";
+  // the corners morph too: the card's all round, the panel's only on top
+  const cardR = getComputedStyle(card).borderRadius, panelR = getComputedStyle(sheetPanel).borderRadius;
   const t = document.startViewTransition(() => {
     (open ? card : sheetPanel).style.viewTransitionName = "";
     update();
     (open ? sheetPanel : card).style.viewTransitionName = "pair-card";
     card.classList.toggle("lifted", open);
   });
+  // the box clips what it shows with its own corners (clip-path: it holds wherever overflow on the box does not)
+  const box = (r) => `inset(0 round ${r})`;
+  let corners = null;
+  t.ready.then(() => {
+    corners = root.animate({ clipPath: open ? [box(cardR), box(panelR)] : [box(panelR), box(cardR)] }, {
+      duration: 460, easing: "cubic-bezier(0.32, 0.72, 0, 1)", fill: "both", pseudoElement: "::view-transition-group(pair-card)",
+    });
+  }).catch(() => {});
   t.finished.finally(() => {
+    corners?.cancel();   // it outlives the box otherwise, and would steer the next morph
     root.classList.remove("vt-morph");
     card.style.viewTransitionName = "";
     sheetPanel.style.viewTransitionName = "";
