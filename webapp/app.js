@@ -4472,19 +4472,870 @@ function profileView() {
 
 
 /* ---------- launch: instead of a loading screen, a greeting in the student's own direction ----------
-   Maths («Прикладная математика и информатика»): the RainingLetters + TextScramble component (React) ported
-   to a canvas, mathematical symbols falling in italic serif the way formulas are typeset; in a clearing in the
-   middle the greeting decodes line by line: «Приветствую, Анна», «Студент 1 курса», the direction.
+   Over the loading app, a scene of the student's direction fills the screen and in a clearing in the middle the
+   greeting decodes line by line out of that direction's own signs: «Приветствую, Анна», «Студент 1 курса», the
+   direction. Maths: symbols raining in italic serif (RainingLetters + TextScramble, React, ported to a canvas).
+   Journalism: tomorrow's paper typing itself. Geography: the globe turning to Sevastopol. Physics: the field of
+   two charges. Economics: the market, live. Psychology: signals running through neurons. History: a ruler of
+   years to today. Philology: Pushkin and Lermontov parsed in pencil. Public administration: the town hall and its
+   town. State audit: the books checked. Any other direction: the sea off Sevastopol.
    The app loads underneath and comes up with its cascade once both are done; a tap skips. It knows whom to
-   greet from the last launch (GREET_KEY), so it starts before the network answers. Other directions get their
-   own later: directionFx() names the scene. */
+   greet from the last launch (GREET_KEY), so it starts before the network answers. Each scene draws its still
+   parts once on a hidden canvas; a frame adds only what moves. The scenes were chosen on intros/index.html. */
 
 const GREET_KEY = "msu.greet";
-const MATH_SYMBOLS = "∑∫∮∂∞πλθφΔ∇√≈≠≡≤≥±×÷∈∉∀∃∅ℝℕℤℚ⊂∪∩→⇔xyznkfg012345679()[]{}<>=+−^!";
-const SCRAMBLE_CHARS = "∑∫∂∞π√≈≠≤≥∈∀∃ΔλθΩ<>{}[]=+−^";
 
+/** a scene per direction: { signs the greeting decodes from, scene(ctx, w, h, dpr, colours) → frame(dt) } */
+const LAUNCH = (() => {
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const pick = (list) => list[Math.floor(Math.random() * list.length)];
+
+  /* ---------- maths: symbols raining ----------
+     Each symbol is set in type once, dim and lit (with its glow), as a little picture; a frame only copies
+     pictures, which a phone does far faster than setting 120 italic glyphs and their glow every frame. */
+  const MATH_SYMBOLS = "∑∫∮∂∞πλθφΔ∇√≈≠≡≤≥±×÷∈∉∀∃∅ℝℕℤℚ⊂∪∩→⇔xyznkfg012345679()[]{}<>=+−^!";
+  function mathScene(ctx, w, h, dpr, c) {
+    const drops = Array.from({ length: Math.round((w * h) / 2600) }, () => ({
+      ch: pick(MATH_SYMBOLS), x: Math.random() * w, y: Math.random() * h,
+      v: h * (0.22 + Math.random() * 0.45), // px per second
+    }));
+    const sprites = new Map();
+    const sprite = (ch, on) => {
+      const key = (on ? "+" : "-") + ch;
+      if (!sprites.has(key)) {
+        const size = on ? 30 : 24, side = size * 2 + (on ? 28 : 4);
+        const s = document.createElement("canvas");
+        s.width = s.height = Math.ceil(side * dpr);
+        const g = s.getContext("2d");
+        g.scale(dpr, dpr);
+        g.textAlign = "center";
+        g.textBaseline = "middle";
+        g.font = `italic ${size}px "Cambria Math", "STIX Two Math", "Times New Roman", serif`;
+        g.globalAlpha = on ? 1 : 0.38;
+        g.fillStyle = on ? c.accent : c.faint;
+        if (on) { g.shadowColor = c.accent; g.shadowBlur = 14; }
+        g.fillText(ch, side / 2, side / 2);
+        sprites.set(key, { s, half: side / 2 });
+      }
+      return sprites.get(key);
+    };
+    let lit = new Set(), t = 0, lastFlicker = -1e9;
+    return (dt) => {
+      t += dt * 1000;
+      if (t - lastFlicker > 60) { // a few symbols light up at a time, as in the original
+        lit = new Set(Array.from({ length: 3 + Math.floor(Math.random() * 4) }, () => Math.floor(Math.random() * drops.length)));
+        lastFlicker = t;
+      }
+      ctx.clearRect(0, 0, w, h);
+      drops.forEach((d, i) => {
+        d.y += d.v * dt;
+        if (d.y > h + 24) { d.y = -24; d.x = Math.random() * w; d.ch = pick(MATH_SYMBOLS); }
+        const s = sprite(d.ch, lit.has(i));
+        ctx.drawImage(s.s, d.x - s.half, d.y - s.half, s.half * 2, s.half * 2);
+      });
+    };
+  }
+
+  /* ---------- journalism: tomorrow's paper being written ----------
+     The screen is a newspaper page in columns: headlines, paragraphs, a photo box. Everywhere at once the lines
+     type themselves out behind a blinking blue caret, as if the whole newsroom were writing; now and then a
+     rubric flashes over a headline in blue — СРОЧНО, ЭКСКЛЮЗИВ, РЕПОРТАЖ — and fades into the page.
+     Finished lines are drawn once onto a hidden «paper» canvas: a frame copies it and adds only what moves. */
+  function journalismScene(ctx, w, h, dpr, c) {
+    const RUBRICS = ["СРОЧНО", "ЭКСКЛЮЗИВ", "РЕПОРТАЖ", "ИНТЕРВЬЮ", "МНЕНИЕ", "ФОТО", "ГЛАВНОЕ", "НОВОСТИ"];
+    const pad = 14, gutter = 14, cols = w < 520 ? 3 : 4;
+    const cw = (w - pad * 2 - gutter * (cols - 1)) / cols;
+    const paper = document.createElement("canvas");
+    paper.width = w * dpr; paper.height = h * dpr;
+    const pg = paper.getContext("2d");
+    pg.scale(dpr, dpr);
+
+    // the page's layout: per column, headlines (two thick bars), paragraphs (thin lines, the first indented,
+    // the last short) and now and then a photo box; each block starts typing at its own moment
+    const blocks = [];
+    for (let col = 0; col < cols; col++) {
+      const x0 = pad + col * (cw + gutter);
+      let y = 18 + rand(0, 10);
+      while (y < h - 30) {
+        const r = Math.random();
+        const start = rand(0, 1500);
+        if (r < 0.14) {
+          blocks.push({ kind: "head", start, lines: [{ x: x0, y, len: cw * rand(0.75, 0.95), th: 7 }, { x: x0, y: y + 12, len: cw * rand(0.4, 0.7), th: 7 }] });
+          y += 32;
+        } else if (r < 0.22 && cw > 70) {
+          const bh = cw * rand(0.55, 0.75);
+          blocks.push({ kind: "photo", start, x: x0, y, bw: cw, bh });
+          y += bh + 14;
+        } else {
+          const n = 3 + Math.floor(rand(0, 5)), lines = [];
+          for (let i = 0; i < n; i++) {
+            const indent = i === 0 ? 8 : 0;
+            lines.push({ x: x0 + indent, y: y + i * 8, len: (i === n - 1 ? cw * rand(0.3, 0.7) : cw - indent) * rand(0.92, 1), th: 3 });
+          }
+          blocks.push({ kind: "text", start, lines });
+          y += n * 8 + 10;
+        }
+      }
+      // the thin rule between columns
+      if (col) { pg.globalAlpha = 0.14; pg.fillStyle = c.faint; pg.fillRect(x0 - gutter / 2, 14, 1, h - 28); }
+    }
+    blocks.forEach((b) => { b.speed = rand(260, 420); b.line = 0; b.done = false; });
+
+    // a rubric is set once as a little picture, then only faded in and out over a headline
+    const stamps = new Map();
+    const stamp = (word) => {
+      if (!stamps.has(word)) {
+        const s = document.createElement("canvas"), g = s.getContext("2d");
+        g.font = "700 10px Inter, system-ui, sans-serif";
+        const tw = Math.ceil(g.measureText(word).width + word.length * 1.2) + 10;
+        s.width = tw * dpr; s.height = 16 * dpr;
+        g.scale(dpr, dpr);
+        g.font = "700 10px Inter, system-ui, sans-serif";
+        g.fillStyle = c.accent;
+        g.globalAlpha = 0.16; g.fillRect(0, 0, tw, 16);
+        g.globalAlpha = 1;
+        if ("letterSpacing" in g) g.letterSpacing = "1.2px";
+        g.textBaseline = "middle";
+        g.fillText(word, 5, 8.5);
+        stamps.set(word, { s, tw });
+      }
+      return stamps.get(word);
+    };
+    const flashes = [];
+    let nextFlash = 700, t = 0;
+
+    const bar = (g, l, len, alpha) => { g.globalAlpha = alpha; g.fillRect(l.x, l.y, len, l.th); };
+    const alphaOf = (b) => (b.kind === "head" ? 0.55 : 0.3);
+
+    return (dt) => {
+      t += dt * 1000;
+      ctx.clearRect(0, 0, w, h);
+      ctx.globalAlpha = 1;
+      ctx.drawImage(paper, 0, 0, w, h);
+      ctx.fillStyle = c.faint;
+      for (const b of blocks) {
+        if (b.done || t < b.start) continue;
+        if (b.kind === "photo") {   // the photo box draws its frame and cross, then settles onto the paper
+          const k = Math.min(1, (t - b.start) / 500);
+          ctx.globalAlpha = 0.3 * k;
+          ctx.strokeStyle = c.faint;
+          ctx.lineWidth = 1;
+          ctx.strokeRect(b.x + 0.5, b.y + 0.5, b.bw - 1, (b.bh - 1) * k);
+          if (k === 1) {
+            pg.globalAlpha = 0.3; pg.strokeStyle = c.faint; pg.lineWidth = 1;
+            pg.strokeRect(b.x + 0.5, b.y + 0.5, b.bw - 1, b.bh - 1);
+            pg.beginPath(); pg.moveTo(b.x, b.y); pg.lineTo(b.x + b.bw, b.y + b.bh); pg.moveTo(b.x + b.bw, b.y); pg.lineTo(b.x, b.y + b.bh);
+            pg.globalAlpha = 0.12; pg.stroke();
+            b.done = true;
+          }
+          continue;
+        }
+        // a text block: its lines type out one after another
+        const l = b.lines[b.line];
+        l.typed = Math.min(l.len, (l.typed || 0) + b.speed * dt);
+        ctx.fillStyle = c.faint;
+        bar(ctx, l, l.typed, alphaOf(b));
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = c.accent;
+        ctx.fillRect(l.x + l.typed + 1, l.y - (b.kind === "head" ? 1 : 3), 1.5, b.kind === "head" ? 9 : 8);   // the caret
+        if (l.typed >= l.len) {
+          pg.fillStyle = c.faint;
+          bar(pg, l, l.len, alphaOf(b));
+          if (++b.line === b.lines.length) b.done = true;
+        }
+      }
+      // now and then a rubric flashes over a finished headline
+      if (t > nextFlash) {
+        const heads = blocks.filter((b) => b.kind === "head" && b.done && !b.flashed);
+        if (heads.length) { const b = pick(heads); b.flashed = true; flashes.push({ b, word: pick(RUBRICS), at: t }); }
+        nextFlash = t + rand(260, 520);
+      }
+      for (const f of flashes) {
+        const age = t - f.at;
+        if (age > 1400) continue;
+        const a = age < 160 ? age / 160 : age > 900 ? Math.max(0, 1 - (age - 900) / 500) : 1;
+        const s = stamp(f.word), l = f.b.lines[0];
+        ctx.globalAlpha = a;
+        ctx.drawImage(s.s, l.x - 2, l.y - 22, s.tw, 16);
+      }
+      ctx.globalAlpha = 1;
+    };
+  }
+
+  /* ---------- geography: the globe turning to Sevastopol ----------
+     A wireframe globe, tilted as the Earth is, turns behind the greeting. Sevastopol is a blue point with a
+     ring that keeps leaving it; from it, one after another, routes arc out over the curve of the Earth to the
+     world's cities, and each city answers with a ring when its route arrives. Only lines and dots: a frame
+     is a few hundred points through the same projection. */
+  function geographyScene(ctx, w, h, dpr, c) {
+    const R = Math.min(w * 0.44, h * 0.3), cx = w / 2, cy = h / 2;
+    const tilt = (23.4 * Math.PI) / 180, deg = Math.PI / 180;
+    const HOME = [44.6, 33.5];   // Sevastopol
+    const CITIES = [[55.75, 37.62], [48.86, 2.35], [40.71, -74.0], [35.68, 139.7], [30.04, 31.24], [-22.9, -43.2], [-33.87, 151.2], [28.61, 77.21], [-33.92, 18.42], [64.15, -21.94], [1.35, 103.82], [19.43, -99.13]];
+    let rot = (-33.5 - 50) * deg;   // Sevastopol comes round to the front in about two seconds
+    const speed = 24 * deg;         // per second
+    let t = 0;
+
+    const vec = (lat, lon) => [Math.cos(lat * deg) * Math.sin(lon * deg), Math.sin(lat * deg), Math.cos(lat * deg) * Math.cos(lon * deg)];
+    // a point on (or, lifted, above) the sphere as it stands now: turned by rot, tilted, seen from the front
+    const view = ([x, y, z], lift = 1) => {
+      const xr = x * Math.cos(rot) + z * Math.sin(rot), zr = -x * Math.sin(rot) + z * Math.cos(rot);
+      const yt = y * Math.cos(tilt) - zr * Math.sin(tilt), zt = y * Math.sin(tilt) + zr * Math.cos(tilt);
+      return [cx + R * lift * xr, cy - R * lift * yt, zt];
+    };
+    const slerp = (a, b, s) => {
+      const d = Math.acos(Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]));
+      if (d < 1e-6) return a;
+      const k1 = Math.sin((1 - s) * d) / Math.sin(d), k2 = Math.sin(s * d) / Math.sin(d);
+      return [a[0] * k1 + b[0] * k2, a[1] * k1 + b[1] * k2, a[2] * k1 + b[2] * k2];
+    };
+
+    // the grid's points, made once: meridians every 20°, parallels every 20°
+    const lines = [];
+    for (let lon = 0; lon < 360; lon += 20) { const pts = []; for (let lat = -90; lat <= 90; lat += 6) pts.push(vec(lat, lon)); lines.push({ pts, eq: false }); }
+    for (let lat = -60; lat <= 60; lat += 20) { const pts = []; for (let lon = 0; lon <= 360; lon += 6) pts.push(vec(lat, lon)); lines.push({ pts, eq: lat === 0 }); }
+
+    // the soft light behind the globe, set once
+    const glow = document.createElement("canvas");
+    glow.width = glow.height = Math.ceil(R * 2.6 * dpr);
+    { const g = glow.getContext("2d"), r = glow.width / 2, grad = g.createRadialGradient(r, r, R * 0.9 * dpr, r, r, r);
+      grad.addColorStop(0, c.accent); grad.addColorStop(1, "transparent"); g.globalAlpha = 0.12; g.fillStyle = grad; g.fillRect(0, 0, glow.width, glow.height); }
+
+    const home = vec(...HOME);
+    const routes = CITIES.map((p, i) => ({ to: vec(...p), at: 600 + i * 330 }));
+
+    const ring = (x, y, age, period, size) => {
+      const k = (age % period) / period;
+      ctx.globalAlpha = 0.7 * (1 - k);
+      ctx.beginPath(); ctx.arc(x, y, 3 + size * k, 0, Math.PI * 2); ctx.stroke();
+    };
+
+    return (dt) => {
+      t += dt * 1000;
+      rot += speed * dt;
+      ctx.clearRect(0, 0, w, h);
+      ctx.globalAlpha = 1;
+      ctx.drawImage(glow, cx - glow.width / dpr / 2, cy - glow.height / dpr / 2, glow.width / dpr, glow.height / dpr);
+      // the grid, the far side faint, the near side clearer; one path each, stroked once
+      const front = new Path2D(), back = new Path2D(), eq = new Path2D();
+      for (const line of lines) {
+        let prev = null;
+        for (const p of line.pts) {
+          const q = view(p);
+          if (prev) {
+            const path = line.eq && q[2] > 0 && prev[2] > 0 ? eq : q[2] > 0 && prev[2] > 0 ? front : back;
+            path.moveTo(prev[0], prev[1]); path.lineTo(q[0], q[1]);
+          }
+          prev = q;
+        }
+      }
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = c.faint;
+      ctx.globalAlpha = 0.1; ctx.stroke(back);
+      ctx.globalAlpha = 0.32; ctx.stroke(front);
+      ctx.strokeStyle = c.accent; ctx.globalAlpha = 0.45; ctx.stroke(eq);
+      // the rim
+      ctx.strokeStyle = c.muted; ctx.globalAlpha = 0.45;
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+
+      // routes from Sevastopol, lifted over the curve, drawn as they fly; the city rings when one lands
+      ctx.strokeStyle = c.accent; ctx.fillStyle = c.accent; ctx.lineWidth = 1.5;
+      for (const r of routes) {
+        const age = t - r.at;
+        if (age < 0) continue;
+        const k = Math.min(1, age / 900), fade = age > 2600 ? Math.max(0, 1 - (age - 2600) / 600) : 1;
+        if (fade <= 0) continue;
+        const path = new Path2D();
+        let started = false, head = null;
+        for (let i = 0; i <= 24; i++) {
+          const s = (i / 24) * k;
+          const q = view(slerp(home, r.to, s), 1 + 0.16 * Math.sin(Math.PI * s));
+          if (q[2] > -0.08) { started ? path.lineTo(q[0], q[1]) : path.moveTo(q[0], q[1]); started = true; head = q; }
+          else started = false;
+        }
+        ctx.globalAlpha = 0.85 * fade; ctx.stroke(path);
+        if (head && k < 1) { ctx.globalAlpha = fade; ctx.beginPath(); ctx.arc(head[0], head[1], 2.2, 0, Math.PI * 2); ctx.fill(); }
+        if (k === 1) {
+          const q = view(r.to);
+          if (q[2] > 0) {
+            ctx.globalAlpha = fade; ctx.beginPath(); ctx.arc(q[0], q[1], 2.2, 0, Math.PI * 2); ctx.fill();
+            if (age < 1900) { ctx.lineWidth = 1; ring(q[0], q[1], age - 900, 1000, 10); ctx.lineWidth = 1.5; }
+          }
+        }
+      }
+      // home: a point with a ring that keeps leaving it
+      const hq = view(home);
+      if (hq[2] > 0) {
+        ctx.globalAlpha = 1; ctx.beginPath(); ctx.arc(hq[0], hq[1], 3.2, 0, Math.PI * 2); ctx.fill();
+        ctx.lineWidth = 1.2; ring(hq[0], hq[1], t, 1600, 14);
+      }
+      ctx.globalAlpha = 1;
+    };
+  }
+
+  /* ---------- physics: the field of two charges ----------
+     The textbook figure: a positive and a negative charge, and between them the lines of force, drawn out of the
+     plus and curving into the minus; then charges run along them, plus to minus, and the two poles breathe.
+     The lines are worked out once, by stepping along the field; a frame moves only the running charges. */
+  function physicsScene(ctx, w, h, dpr, c) {
+    const Q = [{ x: w * 0.28, y: h * 0.26, q: 1 }, { x: w * 0.72, y: h * 0.74, q: -1 }];
+    const field = (x, y) => {
+      let ex = 0, ey = 0;
+      for (const p of Q) { const dx = x - p.x, dy = y - p.y, r2 = dx * dx + dy * dy, r3 = r2 * Math.sqrt(r2); ex += (p.q * dx) / r3; ey += (p.q * dy) / r3; }
+      return [ex, ey];
+    };
+    const N = 20, lines = [];
+    for (let i = 0; i < N; i++) {
+      const a = (i / N) * Math.PI * 2;
+      let x = Q[0].x + Math.cos(a) * 14, y = Q[0].y + Math.sin(a) * 14;
+      const pts = [[x, y]], lens = [0];
+      for (let s = 0; s < 1400; s++) {
+        const [ex, ey] = field(x, y), m = Math.hypot(ex, ey);
+        if (!m) break;
+        x += (ex / m) * 3; y += (ey / m) * 3;
+        pts.push([x, y]); lens.push(lens[lens.length - 1] + 3);
+        if (Math.hypot(x - Q[1].x, y - Q[1].y) < 14 || x < -80 || x > w + 80 || y < -80 || y > h + 80) break;
+      }
+      lines.push({ pts, lens, total: lens[lens.length - 1], dots: [rand(0, 1), rand(0, 1)] });
+    }
+    const at = (L, d) => {   // the point at distance d along a line
+      let lo = 0, hi = L.lens.length - 1;
+      while (hi - lo > 1) { const mid = (lo + hi) >> 1; L.lens[mid] < d ? (lo = mid) : (hi = mid); }
+      return L.pts[hi];
+    };
+    let t = 0;
+    return (dt) => {
+      t += dt * 1000;
+      ctx.clearRect(0, 0, w, h);
+      const grow = Math.min(1, t / 1000);
+      // equipotential rings
+      ctx.setLineDash([3, 5]); ctx.strokeStyle = c.faint; ctx.lineWidth = 1;
+      for (const p of Q) for (const r of [30, 56, 86]) { ctx.globalAlpha = 0.16 * grow; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.stroke(); }
+      ctx.setLineDash([]);
+      // the lines of force, drawn out of the plus
+      ctx.strokeStyle = c.faint; ctx.globalAlpha = 0.38; ctx.lineWidth = 1.1;
+      for (const L of lines) {
+        const upto = L.total * grow;
+        ctx.beginPath(); ctx.moveTo(L.pts[0][0], L.pts[0][1]);
+        for (let i = 1; i < L.pts.length && L.lens[i] <= upto; i += 2) ctx.lineTo(L.pts[i][0], L.pts[i][1]);
+        ctx.stroke();
+      }
+      // charges running along them
+      if (t > 700) {
+        ctx.fillStyle = c.accent;
+        for (const L of lines) for (let j = 0; j < L.dots.length; j++) {
+          L.dots[j] = (L.dots[j] + (dt * 130) / L.total) % 1;
+          const [x, y] = at(L, L.dots[j] * L.total);
+          ctx.globalAlpha = 0.9 * Math.min(1, (t - 700) / 400);
+          ctx.beginPath(); ctx.arc(x, y, 2.2, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+      // the two poles, breathing
+      const pulse = 1 + 0.06 * Math.sin(t / 300);
+      for (const p of Q) {
+        ctx.globalAlpha = 0.18; ctx.fillStyle = p.q > 0 ? c.accent : c.faint;
+        ctx.beginPath(); ctx.arc(p.x, p.y, 22 * pulse, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1; ctx.fillStyle = p.q > 0 ? c.accent : c.muted;
+        ctx.beginPath(); ctx.arc(p.x, p.y, 13, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = c.ground; ctx.fillRect(p.x - 6, p.y - 1.25, 12, 2.5);
+        if (p.q > 0) ctx.fillRect(p.x - 1.25, p.y - 6, 2.5, 12);
+      }
+      ctx.globalAlpha = 1;
+    };
+  }
+
+  /* ---------- philology: a sentence taken apart ----------
+     Two classics write themselves above and below the greeting, word by word, in italic, as on a page; then the
+     philologist's pencil goes over them with the marks every Russian school taught: one line under the subject,
+     two under the predicate, dashes under the object, a wave under the attribute, dot-and-dash under the
+     circumstance. Finished words and marks are laid down on a hidden page; a frame adds only what is appearing. */
+  function philologyScene(ctx, w, h, dpr, c) {
+    // Pushkin (1825) and Lermontov (1832); each word may carry its part of the sentence
+    const VERSES = [
+      { y: h * 0.08, lines: [["Я:1", "помню:2", "чудное:w", "мгновенье:o"], ["Передо:d", "мной:d", "явилась:2", "ты:1"], ["Как", "мимолётное:w", "виденье,"], ["Как", "гений", "чистой:w", "красоты."]] },
+      { y: h * 0.66, lines: [["Белеет:2", "парус:1", "одинокой:w"], ["В:d", "тумане:d", "моря", "голубом!..:w"], ["Что:o", "ищет:2", "он:1", "в", "стране", "далёкой?"], ["Что", "кинул", "он", "в", "краю", "родном?.."]] },
+    ];
+    const font = "italic 17px Georgia, 'Times New Roman', serif", lh = 32, left = 24;
+    const page = document.createElement("canvas");
+    page.width = w * dpr; page.height = h * dpr;
+    const pg = page.getContext("2d");
+    pg.scale(dpr, dpr);
+    pg.font = font;
+    const space = pg.measureText(" ").width;
+    const words = [];
+    let order = 0;
+    for (const v of VERSES) {
+      v.lines.forEach((line, i) => {
+        let x = left;
+        for (const item of line) {
+          const [text, part] = item.split(":");
+          const wd = pg.measureText(text).width;
+          words.push({ text, part, x, y: v.y + i * lh, w: wd, at: 120 + order++ * 55 });
+          x += wd + space;
+        }
+      });
+    }
+    // a mark under a word, as a path of the pencil; dash patterns for the dotted kinds
+    const mark = (g, wd, k) => {
+      const y = wd.y + 7, x0 = wd.x, x1 = wd.x + wd.w * k;
+      g.beginPath();
+      if (wd.part === "w") {   // a wave
+        for (let x = x0; x <= x1; x += 1) { const yy = y + 1.6 * Math.sin((x - x0) / 2.2); x === x0 ? g.moveTo(x, yy) : g.lineTo(x, yy); }
+        g.setLineDash([]);
+      } else {
+        g.moveTo(x0, y); g.lineTo(x1, y);
+        if (wd.part === "2") { g.moveTo(x0, y + 3.5); g.lineTo(x1, y + 3.5); }
+        g.setLineDash(wd.part === "o" ? [4, 3] : wd.part === "d" ? [6, 2.5, 1.5, 2.5] : []);
+      }
+      g.stroke();
+      g.setLineDash([]);
+    };
+    let t = 0;
+    return (dt) => {
+      t += dt * 1000;
+      ctx.clearRect(0, 0, w, h);
+      ctx.globalAlpha = 1;
+      ctx.drawImage(page, 0, 0, w, h);
+      ctx.font = font; ctx.textBaseline = "alphabetic";
+      for (const wd of words) {
+        if (wd.done || t < wd.at) continue;
+        const k = Math.min(1, (t - wd.at) / 260);
+        if (!wd.inked) {
+          ctx.globalAlpha = 0.6 * k; ctx.fillStyle = c.faint;
+          ctx.fillText(wd.text, wd.x, wd.y + (1 - k) * 4);
+          if (k === 1) { pg.globalAlpha = 0.6; pg.fillStyle = c.faint; pg.fillText(wd.text, wd.x, wd.y); wd.inked = true; if (!wd.part) wd.done = true; }
+          continue;
+        }
+        // the pencil: a mark drawn under it, in blue, a moment after the word
+        const m = Math.min(1, Math.max(0, (t - wd.at - 420) / 320));
+        if (m <= 0) continue;
+        ctx.globalAlpha = 0.9; ctx.strokeStyle = c.accent; ctx.lineWidth = 1.3;
+        mark(ctx, wd, m);
+        if (m === 1) { pg.globalAlpha = 0.9; pg.strokeStyle = c.accent; pg.lineWidth = 1.3; mark(pg, wd, 1); wd.done = true; }
+      }
+      ctx.globalAlpha = 1;
+    };
+  }
+
+  /* ---------- public administration: from the town hall to the town ----------
+     Above the greeting a chart of government grows from the top: the administration, its three branches, the
+     services under each. Below, the town as a plan of blocks and streets. Decisions run down from the services as
+     blue sparks, and each block a decision reaches lights up for a moment. */
+  function administrationScene(ctx, w, h, dpr, c) {
+    const label = "500 10px Inter, system-ui, sans-serif";
+    const root = { x: w / 2, y: h * 0.07, text: "Администрация", at: 0 };
+    const branches = [["Экономика", ["Бюджет", "Налоги"]], ["Социальная сфера", ["Школы", "Больницы"]], ["Хозяйство", ["Транспорт", "ЖКХ"]]];
+    const nodes = [root], links = [], leaves = [];
+    branches.forEach(([name, kids], i) => {
+      const b = { x: (w * (2 * i + 1)) / 6, y: h * 0.17, text: name, at: 350 + i * 120 };
+      nodes.push(b); links.push([root, b]);
+      kids.forEach((k, j) => {
+        const leaf = { x: b.x + (j ? 1 : -1) * w * 0.085, y: h * 0.27, text: k, at: 750 + i * 120 + j * 60 };
+        nodes.push(leaf); links.push([b, leaf]); leaves.push(leaf);
+      });
+    });
+    ctx.font = label;
+    nodes.forEach((n) => { n.w = ctx.measureText(n.text).width + 14; });
+
+    // the town: blocks between streets, below the greeting
+    const blocks = [];
+    const top = h * 0.64, bottom = h * 0.93, cols = 6, rowsN = 5, gap = 9;
+    const bw = (w - 32 - gap * (cols - 1)) / cols, bh = (bottom - top - gap * (rowsN - 1)) / rowsN;
+    for (let r = 0; r < rowsN; r++) for (let q = 0; q < cols; q++) {
+      if (Math.random() < 0.12) continue;   // a square, a park
+      blocks.push({ x: 16 + q * (bw + gap), y: top + r * (bh + gap), lit: -1e9 });
+    }
+    const sparks = [];
+    let t = 0, next = 1000;
+
+    const box = (n, k) => {
+      const x = n.x - n.w / 2, y = n.y - 10;
+      ctx.globalAlpha = 0.5 * k; ctx.strokeStyle = c.faint; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, n.w, 20, 6) : ctx.rect(x, y, n.w, 20); ctx.stroke();
+      ctx.globalAlpha = 0.75 * k; ctx.fillStyle = c.muted; ctx.fillText(n.text, n.x, n.y + 0.5);
+    };
+    return (dt) => {
+      t += dt * 1000;
+      ctx.clearRect(0, 0, w, h);
+      ctx.font = label; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      // the chart: a link draws itself down to its node, then the node appears
+      for (const [a, b] of links) {
+        const k = Math.min(1, Math.max(0, (t - b.at + 300) / 300));
+        if (k <= 0) continue;
+        const ya = a.y + 10, yb = b.y - 10, ym = (ya + yb) / 2;
+        ctx.globalAlpha = k < 1 ? 0.9 : 0.3; ctx.strokeStyle = k < 1 ? c.accent : c.faint; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(a.x, ya); ctx.lineTo(a.x, ya + (ym - ya) * Math.min(1, k * 3));
+        if (k > 0.33) { ctx.lineTo(a.x + (b.x - a.x) * Math.min(1, (k - 0.33) * 3), ym); }
+        if (k > 0.66) { ctx.lineTo(b.x, ym + (yb - ym) * Math.min(1, (k - 0.66) * 3)); }
+        ctx.stroke();
+      }
+      for (const n of nodes) { const k = Math.min(1, Math.max(0, (t - n.at) / 250)); if (k > 0) box(n, k); }
+      // the town
+      for (const b of blocks) {
+        const age = t - b.lit;
+        ctx.globalAlpha = 0.22; ctx.strokeStyle = c.faint; ctx.lineWidth = 1;
+        ctx.strokeRect(b.x + 0.5, b.y + 0.5, bw - 1, bh - 1);
+        if (age < 1100) { ctx.globalAlpha = 0.35 * (1 - age / 1100); ctx.fillStyle = c.accent; ctx.fillRect(b.x, b.y, bw, bh); }
+      }
+      // decisions: from a service down to a block of the town
+      if (t > next) {
+        const from = pick(leaves), to = pick(blocks);
+        sparks.push({ x0: from.x, y0: from.y + 10, x1: to.x + bw / 2, y1: to.y + bh / 2, to, k: 0 });
+        next = t + rand(140, 260);
+      }
+      ctx.fillStyle = c.accent; ctx.strokeStyle = c.accent;
+      for (let i = sparks.length - 1; i >= 0; i--) {
+        const s = sparks[i];
+        s.k += dt / 0.9;
+        const k = Math.min(1, s.k), e = k * k * (3 - 2 * k);
+        const x = s.x0 + (s.x1 - s.x0) * e, y = s.y0 + (s.y1 - s.y0) * e;
+        ctx.globalAlpha = 0.9; ctx.beginPath(); ctx.arc(x, y, 2.4, 0, Math.PI * 2); ctx.fill();
+        if (k === 1) { s.to.lit = t; sparks.splice(i, 1); }
+      }
+      ctx.globalAlpha = 1; ctx.textAlign = "start";
+    };
+  }
+
+  /* ---------- state audit: the books checked ----------
+     A ledger fills the screen: articles of spending, the plan, the fact. A blue scan line goes down it; each row
+     it passes gets its check, and here and there a fact that does not match its plan is ringed — found. At the
+     foot the checked total counts up. The ledger is drawn once; a frame adds the line, the checks, the rings. */
+  function auditScene(ctx, w, h, dpr, c) {
+    const ITEMS = ["Зарплаты", "Закупки", "Аренда", "Ремонт", "Связь", "Транспорт", "Обучение", "Командировки", "Коммунальные", "Оборудование", "Связь", "Охрана", "Питание", "Типография"];
+    const rowH = 25, top = 44, bottom = h - 112;
+    const n = Math.floor((bottom - top) / rowH);
+    const mono = "500 11px ui-monospace, 'SF Mono', Menlo, Consolas, monospace", sans = "500 11px Inter, system-ui, sans-serif";
+    const colNo = 16, colItem = 44, colPlan = w - 150, colFact = w - 78, colOk = w - 22;
+    const rows = Array.from({ length: n }, (_, i) => {
+      const plan = Math.round(rand(40, 980)) * 1000, off = Math.random() < 0.14;
+      return { y: top + i * rowH, item: ITEMS[i % ITEMS.length], plan, fact: off ? Math.round(plan * rand(1.08, 1.3) / 1000) * 1000 : plan, off };
+    });
+    const fmt = (v) => v.toLocaleString("ru-RU");
+    const sheet = document.createElement("canvas");
+    sheet.width = w * dpr; sheet.height = h * dpr;
+    const g = sheet.getContext("2d");
+    g.scale(dpr, dpr);
+    g.textBaseline = "middle";
+    g.fillStyle = c.faint;
+    g.globalAlpha = 0.5; g.font = sans;
+    g.fillText("№", colNo, top - 14); g.fillText("Статья", colItem, top - 14);
+    g.textAlign = "right"; g.fillText("План", colPlan, top - 14); g.fillText("Факт", colFact, top - 14); g.textAlign = "left";
+    for (const r of rows) {
+      g.globalAlpha = 0.1; g.fillRect(12, r.y + rowH / 2, w - 24, 1);
+      g.globalAlpha = 0.45; g.font = mono; g.fillText(String(rows.indexOf(r) + 1).padStart(2, "0"), colNo, r.y);
+      g.font = sans; g.fillText(r.item, colItem, r.y);
+      g.font = mono; g.textAlign = "right"; g.fillText(fmt(r.plan), colPlan, r.y); g.fillText(fmt(r.fact), colFact, r.y); g.textAlign = "left";
+    }
+    const RUN = 2300;
+    let t = 0;
+    return (dt) => {
+      t += dt * 1000;
+      const k = Math.min(1, t / RUN), scanY = top - rowH / 2 + (bottom - top + rowH) * k;
+      ctx.clearRect(0, 0, w, h);
+      ctx.globalAlpha = 1;
+      ctx.drawImage(sheet, 0, 0, w, h);
+      ctx.textBaseline = "middle";
+      let total = 0;
+      for (const r of rows) {
+        if (r.y > scanY) break;
+        total += r.fact;
+        const age = Math.min(1, (scanY - r.y) / 40);
+        ctx.globalAlpha = age; ctx.strokeStyle = c.accent; ctx.lineWidth = 1.6; ctx.lineCap = "round"; ctx.lineJoin = "round";
+        ctx.beginPath(); ctx.moveTo(colOk - 5, r.y); ctx.lineTo(colOk - 2, r.y + 3); ctx.lineTo(colOk + 4, r.y - 4); ctx.stroke();
+        if (r.off) {   // a fact that does not match its plan: ringed
+          ctx.globalAlpha = 0.9 * age; ctx.lineWidth = 1.3;
+          ctx.beginPath(); ctx.ellipse(colFact - 26, r.y, 34, 10, -0.05, 0, Math.PI * 2 * age); ctx.stroke();
+        }
+      }
+      // the scan line, glowing
+      if (k < 1) {
+        const grad = ctx.createLinearGradient(0, scanY - 14, 0, scanY);
+        grad.addColorStop(0, "transparent"); grad.addColorStop(1, c.accent);
+        ctx.globalAlpha = 0.18; ctx.fillStyle = grad; ctx.fillRect(0, scanY - 14, w, 14);
+        ctx.globalAlpha = 0.9; ctx.fillStyle = c.accent; ctx.fillRect(0, scanY, w, 1.5);
+      }
+      // the checked total
+      ctx.globalAlpha = 0.8; ctx.fillStyle = c.muted; ctx.font = sans; ctx.fillText("Проверено", colItem, h - 78);
+      ctx.font = "600 13px ui-monospace, 'SF Mono', Menlo, Consolas, monospace"; ctx.textAlign = "right"; ctx.fillStyle = c.accent;
+      ctx.fillText(`${fmt(total)} ₽`, colFact, h - 78); ctx.textAlign = "left";
+      ctx.globalAlpha = 1;
+    };
+  }
+
+  /* ---------- any other direction: the sea off Sevastopol ----------
+     For a direction with no scene of its own yet: the sea the app's blue is named after. Waves roll in layers,
+     the far ones slow and faint, the near ones faster; light glints on the crests; gulls glide over. */
+  function seaScene(ctx, w, h, dpr, c) {
+    const layers = Array.from({ length: 7 }, (_, i) => ({
+      y: h * (0.6 + i * 0.05), amp: 3 + i * 1.6, len: 60 + i * 22, speed: 10 + i * 9, phase: rand(0, 6), alpha: 0.12 + i * 0.07,
+    }));
+    const gulls = Array.from({ length: 3 }, () => ({ x: rand(-60, w), y: rand(h * 0.12, h * 0.34), v: rand(14, 26), s: rand(1.3, 1.8), flap: rand(0, 6) }));
+    const glints = [];
+    const waveY = (L, x, t) => L.y + L.amp * Math.sin((x / L.len) * Math.PI * 2 + L.phase - (t * L.speed) / L.len * Math.PI * 2 / 2)
+      + L.amp * 0.4 * Math.sin((x / (L.len * 0.43)) * Math.PI * 2 + t * 0.9);
+    let t = 0;
+    return (dt) => {
+      t += dt;
+      ctx.clearRect(0, 0, w, h);
+      // a low sun behind the sea, a soft disc
+      ctx.globalAlpha = 0.08; ctx.fillStyle = c.accent;
+      ctx.beginPath(); ctx.arc(w * 0.72, h * 0.57, w * 0.16, 0, Math.PI * 2); ctx.fill();
+      ctx.lineWidth = 1.2; ctx.strokeStyle = c.faint;
+      for (const L of layers) {
+        ctx.globalAlpha = L.alpha;
+        ctx.beginPath();
+        for (let x = -4; x <= w + 4; x += 6) { const y = waveY(L, x, t); x === -4 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+        ctx.stroke();
+      }
+      // glints on the crests
+      if (Math.random() < dt * 14) { const L = pick(layers.slice(2)); glints.push({ L, x: rand(0, w), at: t }); }
+      ctx.strokeStyle = c.accent; ctx.lineWidth = 1.6;
+      for (let i = glints.length - 1; i >= 0; i--) {
+        const gl = glints[i], age = t - gl.at;
+        if (age > 0.9) { glints.splice(i, 1); continue; }
+        const y = waveY(gl.L, gl.x, t) - 2;
+        ctx.globalAlpha = Math.sin((age / 0.9) * Math.PI);
+        ctx.beginPath(); ctx.moveTo(gl.x - 5, y); ctx.lineTo(gl.x + 5, y); ctx.stroke();
+      }
+      // gulls: two arcs each, flapping
+      ctx.strokeStyle = c.muted; ctx.lineWidth = 1.4; ctx.lineCap = "round";
+      for (const g of gulls) {
+        g.x += g.v * dt; if (g.x > w + 40) { g.x = -40; g.y = rand(h * 0.12, h * 0.34); }
+        const f = Math.sin(t * 4 + g.flap) * 3 * g.s, span = 9 * g.s;
+        ctx.globalAlpha = 0.6;
+        ctx.beginPath();
+        ctx.moveTo(g.x - span, g.y - f * 0.6); ctx.quadraticCurveTo(g.x - span / 2, g.y - 4 * g.s - f, g.x, g.y);
+        ctx.quadraticCurveTo(g.x + span / 2, g.y - 4 * g.s - f, g.x + span, g.y - f * 0.6);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    };
+  }
+
+  /* ---------- economics: the market, live ----------
+     A candlestick chart runs across the screen: a new candle rises or falls at the right edge and the chart slides
+     left, a moving average follows the prices, the last price sits in a blue tag on the right; a ticker of indices
+     runs along the top. Up candles are blue, down ones grey, in the app's own colours. */
+  function economicsScene(ctx, w, h, dpr, c) {
+    const step = 13, body = 8, top = h * 0.14, bottom = h * 0.86;
+    const candles = [];
+    let price = 100;
+    const make = () => {
+      const o = price, move = rand(-2.2, 2.6);   // a drift upward, the market's hope
+      price = Math.max(20, o + move);
+      candles.push({ o, c: price, hi: Math.max(o, price) + rand(0, 1.6), lo: Math.min(o, price) - rand(0, 1.6) });
+    };
+    for (let i = 0; i < Math.ceil(w / step) + 2; i++) make();
+    let lo = 0, hi = 0, scroll = 0;
+    const fit = (snap) => {   // the price scale follows what is on screen, smoothly
+      const seen = candles.slice(-Math.ceil(w / step) - 1);
+      const l = Math.min(...seen.map((k) => k.lo)) - 3, u = Math.max(...seen.map((k) => k.hi)) + 3;
+      lo = snap ? l : lo + (l - lo) * 0.08; hi = snap ? u : hi + (u - hi) * 0.08;
+    };
+    fit(true);
+    const yOf = (p) => top + ((hi - p) / (hi - lo)) * (bottom - top);
+
+    // the ticker, set once as a strip and slid along
+    const TICKS = ["МОЕКС ▲ 1,24%", "РТС ▲ 0,87%", "ВВП ▲ 2,1%", "ИПЦ ▼ 0,3%", "НЕФТЬ ▲ 0,6%", "ЗОЛОТО ▲ 0,4%", "ОФЗ ▼ 0,1%"];
+    const strip = document.createElement("canvas"), sg = strip.getContext("2d");
+    const font = "500 11px ui-monospace, 'SF Mono', Menlo, Consolas, monospace";
+    sg.font = font;
+    const parts = TICKS.map((s) => s + "      ");
+    const stripW = Math.ceil(parts.reduce((a, s) => a + sg.measureText(s).width, 0));
+    strip.width = stripW * dpr; strip.height = 16 * dpr;
+    sg.scale(dpr, dpr); sg.font = font; sg.textBaseline = "middle";
+    let sx = 0;
+    for (const s of parts) {
+      for (const ch of s) { sg.fillStyle = ch === "▲" ? c.accent : c.faint; sg.fillText(ch, sx, 8.5); sx += sg.measureText(ch).width; }
+    }
+    let tick = 0;
+
+    return (dt) => {
+      scroll += 64 * dt;
+      while (scroll >= step) { scroll -= step; candles.shift(); make(); }
+      fit(false);
+      ctx.clearRect(0, 0, w, h);
+      // the grid
+      ctx.globalAlpha = 0.1; ctx.fillStyle = c.faint;
+      for (let y = top; y <= bottom; y += (bottom - top) / 6) ctx.fillRect(0, Math.round(y), w, 1);
+      // the candles
+      const x0 = w - (candles.length - 1) * step - scroll;
+      candles.forEach((k, i) => {
+        const x = x0 + i * step;
+        if (x < -step || x > w + step) return;
+        const up = k.c >= k.o;
+        ctx.fillStyle = up ? c.accent : c.faint;
+        ctx.globalAlpha = up ? 0.75 : 0.45;
+        ctx.fillRect(Math.round(x), yOf(k.hi), 1, yOf(k.lo) - yOf(k.hi));
+        const y1 = yOf(Math.max(k.o, k.c)), y2 = yOf(Math.min(k.o, k.c));
+        ctx.fillRect(Math.round(x - body / 2), y1, body, Math.max(1, y2 - y1));
+      });
+      // the moving average over eight candles
+      ctx.globalAlpha = 0.6; ctx.strokeStyle = c.accent; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      candles.forEach((k, i) => {
+        if (i < 8) return;
+        const avg = candles.slice(i - 8, i).reduce((a, q) => a + q.c, 0) / 8, x = x0 + i * step;
+        i === 8 ? ctx.moveTo(x, yOf(avg)) : ctx.lineTo(x, yOf(avg));
+      });
+      ctx.stroke();
+      // the last price: a dashed line and its tag
+      const last = candles[candles.length - 1], ly = yOf(last.c);
+      ctx.globalAlpha = 0.5; ctx.setLineDash([3, 4]); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(w - 46, ly); ctx.stroke(); ctx.setLineDash([]);
+      ctx.globalAlpha = 1; ctx.fillStyle = c.accent; ctx.fillRect(w - 46, ly - 9, 46, 18);
+      ctx.fillStyle = c.ground; ctx.font = "600 11px ui-monospace, 'SF Mono', Menlo, Consolas, monospace"; ctx.textBaseline = "middle";
+      ctx.fillText(last.c.toFixed(2).replace(".", ","), w - 41, ly + 0.5);
+      // the ticker along the top
+      tick = (tick + 38 * dt) % stripW;
+      ctx.globalAlpha = 0.9;
+      for (let x = -tick; x < w; x += stripW) ctx.drawImage(strip, x, 18, stripW, 16);
+      ctx.globalAlpha = 1;
+    };
+  }
+
+  /* ---------- psychology: a mind at work ----------
+     A net of neurons fills the screen; signals run along its connections as blue sparks, and each neuron a spark
+     reaches lights up and passes the signal on to one or two of its neighbours, so thoughts spread and branch.
+     The net itself is drawn once; a frame adds only the sparks and the flashes. */
+  function psychologyScene(ctx, w, h, dpr, c) {
+    const nodes = [];
+    for (let tries = 0; nodes.length < Math.round((w * h) / 8000) && tries < 4000; tries++) {
+      const p = { x: rand(16, w - 16), y: rand(16, h - 16), links: [], flash: -1e9 };
+      if (nodes.every((q) => Math.hypot(q.x - p.x, q.y - p.y) > 44)) nodes.push(p);
+    }
+    for (const p of nodes) {   // each to its nearest few
+      nodes.filter((q) => q !== p).sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y) - Math.hypot(b.x - p.x, b.y - p.y))
+        .slice(0, 3).forEach((q) => { if (!p.links.includes(q)) { p.links.push(q); q.links.push(p); } });
+    }
+    const net = document.createElement("canvas");
+    net.width = w * dpr; net.height = h * dpr;
+    const g = net.getContext("2d");
+    g.scale(dpr, dpr);
+    g.strokeStyle = c.faint; g.globalAlpha = 0.16; g.lineWidth = 1;
+    g.beginPath();
+    for (const p of nodes) for (const q of p.links) if (p.x < q.x) { g.moveTo(p.x, p.y); g.lineTo(q.x, q.y); }
+    g.stroke();
+    g.fillStyle = c.faint; g.globalAlpha = 0.5;
+    for (const p of nodes) { g.beginPath(); g.arc(p.x, p.y, 2, 0, Math.PI * 2); g.fill(); }
+
+    const sparks = [];
+    let t = 0, next = 0;
+    const fire = (from, avoid) => {
+      const ways = from.links.filter((q) => q !== avoid);
+      for (const to of ways.sort(() => Math.random() - 0.5).slice(0, Math.random() < 0.35 ? 2 : 1)) {
+        if (sparks.length < 46) sparks.push({ from, to, k: 0, len: Math.hypot(to.x - from.x, to.y - from.y) });
+      }
+    };
+    return (dt) => {
+      t += dt * 1000;
+      if (t > next) { const p = pick(nodes); p.flash = t; fire(p); next = t + rand(160, 320); }
+      ctx.clearRect(0, 0, w, h);
+      ctx.globalAlpha = 1;
+      ctx.drawImage(net, 0, 0, w, h);
+      ctx.fillStyle = c.accent; ctx.strokeStyle = c.accent;
+      for (let i = sparks.length - 1; i >= 0; i--) {
+        const s = sparks[i];
+        s.k += (220 * dt) / s.len;
+        const k = Math.min(1, s.k), tail = Math.max(0, k - 18 / s.len);
+        ctx.globalAlpha = 0.9; ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(s.from.x + (s.to.x - s.from.x) * tail, s.from.y + (s.to.y - s.from.y) * tail);
+        ctx.lineTo(s.from.x + (s.to.x - s.from.x) * k, s.from.y + (s.to.y - s.from.y) * k);
+        ctx.stroke();
+        if (s.k >= 1) {   // it arrives: the neuron lights and, most times, passes it on
+          sparks.splice(i, 1);
+          s.to.flash = t;
+          if (Math.random() < 0.8) fire(s.to, s.from);
+        }
+      }
+      for (const p of nodes) {
+        const age = t - p.flash;
+        if (age > 700) continue;
+        const k = age / 700;
+        ctx.globalAlpha = 1 - k;
+        ctx.beginPath(); ctx.arc(p.x, p.y, 2.6, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 0.6 * (1 - k); ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(p.x, p.y, 3 + 12 * k, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    };
+  }
+
+  /* ---------- history: through the centuries to today ----------
+     A ruler of years runs under the greeting from 862 to today, fast at first and slowing down, the year itself
+     huge and faint above; the moments of Russian history, of Sevastopol and of Moscow University come past on
+     it as blue marks with their names, and it settles on the present year. */
+  function historyScene(ctx, w, h, dpr, c) {
+    const FROM = 862, TO = new Date().getFullYear(), RUN = 2400, perYear = 6;
+    const EVENTS = [[862, "Новгород"], [988, "Крещение Руси"], [1147, "Москва"], [1380, "Куликовская битва"],
+      [1480, "Стояние на Угре"], [1612, "Ополчение"], [1703, "Петербург"], [1755, "Московский университет"],
+      [1783, "Севастополь"], [1812, "Отечественная война"], [1855, "Оборона Севастополя"], [1961, "Гагарин"], [TO, "Сегодня"]];
+    const rulerY = h * 0.73, mono = "500 11px ui-monospace, 'SF Mono', Menlo, Consolas, monospace";
+    let t = 0;
+    return (dt) => {
+      t += dt * 1000;
+      const k = Math.min(1, t / RUN), year = FROM + (TO - FROM) * (1 - Math.pow(1 - k, 3));   // ease-out: it slows into today
+      ctx.clearRect(0, 0, w, h);
+      // the year, huge and faint, above
+      ctx.globalAlpha = 0.13; ctx.fillStyle = c.faint;
+      ctx.font = "600 96px Inter, system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(String(Math.floor(year)), w / 2, h * 0.2);
+      // the ruler: a tick every five years, taller every ten, labelled every fifty
+      const span = w / 2 / perYear + 10;
+      ctx.fillStyle = c.faint; ctx.font = mono;
+      ctx.globalAlpha = 0.35; ctx.fillRect(0, rulerY, w, 1);
+      for (let y = Math.ceil((year - span) / 5) * 5; y <= year + span; y += 5) {
+        const x = w / 2 + (y - year) * perYear;
+        const big = y % 50 === 0, mid = y % 10 === 0;
+        ctx.globalAlpha = big ? 0.6 : mid ? 0.4 : 0.22;
+        ctx.fillRect(Math.round(x), rulerY, 1, big ? 16 : mid ? 10 : 6);
+        if (big) { ctx.globalAlpha = 0.55; ctx.fillText(String(y), x, rulerY + 28); }
+      }
+      // the moments: a blue mark on the ruler, the name above it, brightest as it passes the middle
+      ctx.font = "600 12px Inter, system-ui, sans-serif";
+      for (const [y, name] of EVENTS) {
+        const x = w / 2 + (y - year) * perYear;
+        if (x < -120 || x > w + 120) continue;
+        const near = Math.max(0, 1 - Math.abs(x - w / 2) / (w / 2));
+        ctx.globalAlpha = 0.35 + 0.65 * near;
+        ctx.fillStyle = c.accent;
+        ctx.beginPath(); ctx.arc(x, rulerY, 3.5, 0, Math.PI * 2); ctx.fill();
+        ctx.fillRect(Math.round(x), rulerY - 22, 1, 18);
+        ctx.fillText(name, x, rulerY - 34);
+        ctx.font = mono; ctx.fillStyle = c.muted; ctx.globalAlpha *= 0.8;
+        ctx.fillText(String(y), x, rulerY - 50);
+        ctx.font = "600 12px Inter, system-ui, sans-serif";
+      }
+      // now: a mark at the middle of the ruler
+      ctx.globalAlpha = 1; ctx.fillStyle = c.text;
+      ctx.beginPath(); ctx.moveTo(w / 2 - 5, rulerY + 38); ctx.lineTo(w / 2 + 5, rulerY + 38); ctx.lineTo(w / 2, rulerY + 32); ctx.fill();
+      ctx.textAlign = "start";
+    };
+  }
+
+  return {
+    math: { scene: mathScene, signs: "∑∫∂∞π√≈≠≤≥∈∀∃ΔλθΩ<>{}[]=+−^" },
+    journalism: { scene: journalismScene, signs: "«»—–…§¶№@#*“”„!?:;" },
+    geography: { scene: geographyScene, signs: "0123456789°′″NSEW.,+−" },
+    physics: { scene: physicsScene, signs: "+−±EqφΦε∇→" },
+    economics: { scene: economicsScene, signs: "0123456789₽$€%▲▼+−.," },
+    psychology: { scene: psychologyScene, signs: "ψΨ∞?!…○●◐◑◒◓" },
+    history: { scene: historyScene, signs: "IVXLCDM·—" },
+    philology: { scene: philologyScene, signs: "ѢѲѴІъ«»—…" },
+    administration: { scene: administrationScene, signs: "→↓§№•▪◆" },
+    audit: { scene: auditScene, signs: "0123456789✓∑%№" },
+    sea: { scene: seaScene, signs: "~≈∽·°∘—" },
+  };
+})();
+
+/** the scene for a direction's name; one with no scene of its own gets the sea */
 function directionFx(faculty) {
-  return /математик|информатик/i.test(faculty || "") ? "math" : null;
+  const name = (faculty || "").toLowerCase();
+  const rules = [[/математик|информатик/, "math"], [/журналист/, "journalism"], [/географ/, "geography"], [/физик/, "physics"],
+    [/экономик/, "economics"], [/психолог/, "psychology"], [/истори/, "history"], [/филолог/, "philology"],
+    [/аудит/, "audit"], [/управлен/, "administration"]];
+  return (rules.find(([re]) => re.test(name)) || [, "sea"])[1];
 }
 
 function rememberGreeting(me) {
@@ -4498,12 +5349,13 @@ function rememberGreeting(me) {
 }
 const forgetGreeting = () => { try { localStorage.removeItem(GREET_KEY); } catch (_) {} };
 
-/** the greeting over the loading app, for a student whose direction has one: { ready() } to call once the app
-    is drawn underneath, or null (no scene, first launch, or the phone asks for less motion) */
+/** the greeting over the loading app: { ready() } to call once the app is drawn underneath, or null (first
+    launch, so nobody to greet yet, or the phone asks for less motion) */
 function playLaunchIntro() {
   let who = null;
   try { who = JSON.parse(localStorage.getItem(GREET_KEY) || "null"); } catch (_) {}
-  if (!who || directionFx(who.faculty) !== "math" || reduceMotion.matches) return null;
+  if (!who || reduceMotion.matches) return null;
+  const key = directionFx(who.faculty), dir = LAUNCH[key];
   const lines = [
     who.name ? `Приветствую, ${who.name}` : "Приветствую",
     `Студент ${who.course} курса${who.master ? " магистратуры" : ""}`,
@@ -4511,6 +5363,7 @@ function playLaunchIntro() {
   ];
   const fx = document.createElement("div");
   fx.className = "fx-overlay";
+  fx.dataset.fx = key;
   fx.innerHTML = `<canvas aria-hidden="true"></canvas>
     <div class="fx-greet" role="status" aria-label="${esc(lines.join(". "))}">
       <p class="fx-title" aria-hidden="true"></p><p class="fx-line" aria-hidden="true"></p><p class="fx-dir" aria-hidden="true"></p>
@@ -4519,57 +5372,21 @@ function playLaunchIntro() {
   document.body.append(fx);
 
   const css = getComputedStyle(document.documentElement);
-  const faint = css.getPropertyValue("--faint").trim(), accent = css.getPropertyValue("--accent").trim();
+  const colours = Object.fromEntries(["ground", "faint", "muted", "accent", "text"].map((k) => [k, css.getPropertyValue(`--${k}`).trim()]));
   const canvas = fx.querySelector("canvas");
   const ctx = canvas.getContext("2d");
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const w = innerWidth, h = innerHeight;
   canvas.width = w * dpr; canvas.height = h * dpr;
   ctx.scale(dpr, dpr);
+  let frame = null;
+  try { frame = dir.scene(ctx, w, h, dpr, colours); } catch (e) { console.error(e); }
 
-  const pick = (str) => str[Math.floor(Math.random() * str.length)];
-  const drops = Array.from({ length: Math.round((w * h) / 2600) }, () => ({
-    ch: pick(MATH_SYMBOLS), x: Math.random() * w, y: Math.random() * h,
-    v: h * (0.22 + Math.random() * 0.45), // px per second
-  }));
-  // each symbol is set in type once, dim and lit (with its glow), as a little picture; a frame only copies
-  // pictures, which a phone does far faster than setting 120 italic glyphs and their glow every frame
-  const sprites = new Map();
-  const sprite = (ch, on) => {
-    const key = (on ? "+" : "-") + ch;
-    if (!sprites.has(key)) {
-      const size = on ? 30 : 24, side = size * 2 + (on ? 28 : 4);
-      const c = document.createElement("canvas");
-      c.width = c.height = Math.ceil(side * dpr);
-      const g = c.getContext("2d");
-      g.scale(dpr, dpr);
-      g.textAlign = "center";
-      g.textBaseline = "middle";
-      g.font = `italic ${size}px "Cambria Math", "STIX Two Math", "Times New Roman", serif`;
-      g.globalAlpha = on ? 1 : 0.38;
-      g.fillStyle = on ? accent : faint;
-      if (on) { g.shadowColor = accent; g.shadowBlur = 14; }
-      g.fillText(ch, side / 2, side / 2);
-      sprites.set(key, { c, half: side / 2 });
-    }
-    return sprites.get(key);
-  };
-  let lit = new Set();
-  let lastFlicker = 0, last = performance.now(), raf = 0, done = false;
+  let last = performance.now(), raf = 0, done = false;
   const draw = (time) => {
     const dt = Math.min(0.05, (time - last) / 1000);
     last = time;
-    if (time - lastFlicker > 60) { // a few symbols light up at a time, as in the original
-      lit = new Set(Array.from({ length: 3 + Math.floor(Math.random() * 4) }, () => Math.floor(Math.random() * drops.length)));
-      lastFlicker = time;
-    }
-    ctx.clearRect(0, 0, w, h);
-    drops.forEach((d, i) => {
-      d.y += d.v * dt;
-      if (d.y > h + 24) { d.y = -24; d.x = Math.random() * w; d.ch = pick(MATH_SYMBOLS); }
-      const s = sprite(d.ch, lit.has(i));
-      ctx.drawImage(s.c, d.x - s.half, d.y - s.half, s.half * 2, s.half * 2);
-    });
+    try { frame?.(dt); } catch (e) { console.error(e); frame = null; }   // a scene that breaks leaves the greeting
     if (!done) raf = requestAnimationFrame(draw);
   };
   raf = requestAnimationFrame(draw);
@@ -4580,21 +5397,22 @@ function playLaunchIntro() {
     done = true;
     fx.classList.add("out");
     setTimeout(() => { cancelAnimationFrame(raf); fx.remove(); }, 420);
-    // the day underneath comes up with its cascade as the rain clears
+    // the day underneath comes up with its cascade as the scene clears
     const body = app.querySelector(".day-body");
     if (body?.querySelector(".rise")) { body.classList.remove("enter", "slide-next", "slide-prev"); void body.offsetWidth; body.classList.add("enter"); }
   };
   const settle = () => { if (shown && loaded) finish(); };
   fx.addEventListener("click", () => { haptic(); finish(); });
-  const [title, line, dir] = fx.querySelectorAll(".fx-greet p");
-  Promise.all([scramble(title, lines[0]), scramble(line, lines[1], 380), scramble(dir, lines[2], 640)])
+  const [title, line, dirEl] = fx.querySelectorAll(".fx-greet p");
+  Promise.all([scramble(title, lines[0], dir.signs), scramble(line, lines[1], dir.signs, 380), scramble(dirEl, lines[2], dir.signs, 640)])
     .then(() => setTimeout(() => { shown = true; settle(); }, 1200));
   setTimeout(finish, 6000); // never left covering the app, even if frames stall or the network hangs
   return { ready() { loaded = true; settle(); } };
 }
 
-/** TextScramble: each letter flickers through symbols, then settles, at its own random moment, after `delay` ms */
-function scramble(el, text, delay = 0) {
+/** TextScramble: each letter flickers through the direction's signs, then settles, at its own random moment,
+    after `delay` ms */
+function scramble(el, text, signs, delay = 0) {
   return new Promise((resolve) => {
     const queue = [...text].map((to) => {
       if (to === " ") return { to, start: 0, end: 0, ch: "" }; // spaces stay put, so the text wraps as it will settle
@@ -4608,7 +5426,7 @@ function scramble(el, text, delay = 0) {
       for (const q of queue) {
         if (frame >= q.end) { complete++; out += esc(q.to); }
         else if (frame >= q.start) {
-          if (!q.ch || Math.random() < 0.28) q.ch = SCRAMBLE_CHARS[Math.floor(Math.random() * SCRAMBLE_CHARS.length)];
+          if (!q.ch || Math.random() < 0.28) q.ch = signs[Math.floor(Math.random() * signs.length)];
           out += `<span class="dud">${esc(q.ch)}</span>`;
         } else out += q.to === " " ? " " : `<span class="wait">${esc(q.to)}</span>`;
       }
