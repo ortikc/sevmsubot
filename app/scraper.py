@@ -1,6 +1,7 @@
 """Scraper for https://raspisanie.sev.msu.ru/time-table/group (faculty -> course -> group form)."""
 import asyncio
 import logging
+import json
 import re
 from datetime import date, datetime, timedelta, timezone
 
@@ -170,6 +171,47 @@ async def sync_catalog():
 
 
 async def sync_group(group_id: int, client=None):
+    """One group's visible weeks from the site. A failure is noted on the group (the admin panel shows it)
+    and raised on; a success clears the note."""
+    try:
+        count = await _sync_group(group_id, client)
+    except Exception as e:
+        with db.session() as conn:
+            conn.execute("UPDATE groups SET sync_error=? WHERE id=?", (f"{type(e).__name__}: {e}"[:300], group_id))
+        raise
+    with db.session() as conn:
+        conn.execute("UPDATE groups SET sync_error=NULL WHERE id=?", (group_id,))
+    return count
+
+
+def _lesson_line(sign, date_iso, start, subject, room):
+    d = date_iso.split("-")
+    return f"{sign} {d[2]}.{d[1]} {start} {subject}" + (f" (ауд. {room})" if room else "")
+
+
+def _note_changes(conn, group_id, window, lessons):
+    """What changed on the days the group already had in the base, for the admin panel's log. A week that
+    shows up for the first time is not a change, so only days up to the last one already known are compared."""
+    if not window:
+        return
+    marks = ",".join("?" * len(window))
+    old = {(r["date"], r["start"], r["subject"], r["room"]) for r in conn.execute(
+        f"SELECT date, start, subject, room FROM lessons WHERE group_id=? AND date IN ({marks})", (group_id, *window))}
+    if not old:
+        return
+    known_until = max(d for d, *_ in old)
+    new = {(l["date"], l["start"], l["subject"], l["room"]) for l in lessons if l["date"] <= known_until}
+    old = {x for x in old if x[0] <= known_until}
+    added, removed = sorted(new - old), sorted(old - new)
+    if not added and not removed:
+        return
+    details = [_lesson_line("−", *x) for x in removed[:6]] + [_lesson_line("+", *x) for x in added[:6]]
+    conn.execute("INSERT INTO schedule_changes(group_id, added, removed, details) VALUES(?, ?, ?, ?)",
+                 (group_id, len(added), len(removed), json.dumps(details, ensure_ascii=False)))
+    conn.execute("DELETE FROM schedule_changes WHERE id <= (SELECT MAX(id) FROM schedule_changes) - 2000")
+
+
+async def _sync_group(group_id: int, client=None):
     with db.session() as conn:
         g = conn.execute("SELECT * FROM groups WHERE id=?", (group_id,)).fetchone()
     if not g:
@@ -192,6 +234,7 @@ async def sync_group(group_id: int, client=None):
     # the visible window: replace every date the site showed with what it shows now
     window = _visible_dates(html) or dates
     with db.session() as conn:
+        _note_changes(conn, group_id, window, lessons)
         if window:
             conn.execute(
                 f"DELETE FROM lessons WHERE group_id=? AND date IN ({','.join('?' * len(window))})",

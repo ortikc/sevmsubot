@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Панель · Расписание МГУ</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script>
+    (function () {
+      var s = window.Telegram && Telegram.WebApp && Telegram.WebApp.colorScheme;
+      document.documentElement.dataset.theme = s || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+  <main id="app" aria-live="polite"></main>
+  <nav class="tabbar" id="tabbar" hidden aria-label="Разделы">
+    <button data-tab="stats" aria-current="page"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Обзор</button>
+    <button data-tab="users"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.6-3.6 3.2-5.5 6.5-5.5s5.9 1.9 6.5 5.5M16 4.8a3.3 3.3 0 0 1 0 6.4M18 14.8c2 .6 3.2 2.4 3.5 5.2"/></svg>Люди</button>
+    <button data-tab="clubs"><svg viewBox="0 0 24 24"><path d="M4 21V8l8-5 8 5v13M9 21v-6h6v6M2 21h20"/></svg>Клубы</button>
+    <button data-tab="moder"><svg viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 4.5 3.4 8.2 8 9 4.6-.8 8-4.5 8-9V6l-8-3Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>Модерация<i class="dot" id="dot-moder" hidden></i></button>
+    <button data-tab="more"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>Ещё<i class="dot" id="dot-more" hidden></i></button>
+  </nav>
+  <div class="sheet" id="sheet" hidden>
+    <div class="sheet-back" data-close></div>
+    <div class="sheet-panel" role="dialog" aria-modal="true">
+      <button class="sheet-x" data-close aria-label="Закрыть">×</button>
+      <div class="sheet-body" id="sheet-body"></div>
+    </div>
+  </div>
+  <script src="admin.js"></script>
+</body>
+</html>

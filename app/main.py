@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import html
+import json
 import logging
 import mimetypes
 import os
@@ -78,6 +79,11 @@ async def full_sync_loop():
                 await scraper.sync_all()
             except Exception as e:
                 log.warning("full sync failed: %s", e)
+                await admin.alert(f"Полное обновление расписания не прошло: {e}")
+            with db.session() as conn:
+                broken = conn.execute("SELECT COUNT(*) FROM groups WHERE sync_error IS NOT NULL").fetchone()[0]
+            if broken:
+                await admin.alert(f"Расписание: {broken} групп не обновились. Подробности в разделе «Расписание».")
         await asyncio.sleep(15 * 60)
 
 
@@ -143,7 +149,7 @@ async def send_due_reminders(now: datetime):
     with db.session() as conn:
         due = [dict(r) for r in conn.execute(
             "SELECT r.*, u.group_id, u.consent_at FROM reminders r JOIN users u ON u.tg_id = r.tg_id "
-            "WHERE r.sent_at IS NULL AND r.remind_at <= ? ORDER BY r.remind_at",
+            f"WHERE r.sent_at IS NULL AND r.remind_at <= ? AND r.tg_id NOT IN {BANNED} ORDER BY r.remind_at",
             (now.isoformat(timespec="seconds"),))]
     for r in due:
         with db.session() as conn:
@@ -190,7 +196,7 @@ async def send_digests(now: datetime):
     with db.session() as conn:
         users = [dict(u) for u in conn.execute(
             "SELECT tg_id, group_id, digest_time FROM users WHERE digest_time IS NOT NULL AND group_id IS NOT NULL "
-            "AND consent_at IS NOT NULL "
+            f"AND consent_at IS NOT NULL AND tg_id NOT IN {BANNED} "
             "AND (digest_sent_on IS NULL OR digest_sent_on < ?) AND digest_time <= ?", (today, hhmm))]
     for u in users:
         with db.session() as conn:
@@ -253,6 +259,7 @@ async def backup_loop():
                 log.info("backup: %s", path.name)
             except Exception as e:
                 log.warning("backup failed: %s", e)
+                await admin.alert(f"Резервная копия базы не сделалась: {e}")
         await asyncio.sleep(30 * 60)
 
 
@@ -302,12 +309,14 @@ async def lifespan(_app):
         bot.on_login_answer = _login_answer
         bot.on_app = _app_command
         bot.on_app_declined = _app_declined
+        bot.is_banned = _ban_text
         try:
             await bot.setup()
             tasks.append(asyncio.create_task(bot.poll()))
             tasks.append(asyncio.create_task(bot.watch_url()))
         except Exception as e:
             log.warning("bot setup failed: %s", e)
+    tasks += await admin.start()
     yield
     for t in tasks:
         t.cancel()
@@ -322,6 +331,20 @@ async def no_stale_assets(request: Request, call_next):
     if not request.url.path.startswith("/api/") and "cache-control" not in response.headers:
         response.headers["Cache-Control"] = "no-cache"
     return response
+
+
+@app.middleware("http")
+async def admin_host(request: Request, call_next):
+    """admin.sevstud.site is the CRM: its pages come from webapp-admin (mounted at /crm) and its API is
+    /api/admin. The app's own address serves neither; on localhost both work, for testing."""
+    host = (request.headers.get("host") or "").split(":")[0]
+    path = request.url.path
+    if host == admin.CRM_HOST:
+        if not path.startswith(("/api/admin/", "/avatars/", "/posts/", "/crm/")):
+            request.scope["path"] = "/crm" + path
+    elif path.startswith(("/api/admin/", "/crm")) and host not in ("localhost", "127.0.0.1"):
+        return Response("Not Found", status_code=404)
+    return await call_next(request)
 
 
 # ---------- auth ----------
@@ -384,17 +407,52 @@ def _device_name(ua: str) -> str:
     return " · ".join(filter(None, (system, browser))) or "Браузер"
 
 
-def current_user(tg: dict = Depends(current_tg_user)):
+# students the admin banned, as SQL: `tg_id NOT IN {BANNED}`
+BANNED = ("(SELECT tg_id FROM restrictions WHERE kind='ban' "
+          "AND (until IS NULL OR until > strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')))")
+
+
+def _restriction(conn, tg_id: int, kind: str):
+    """The admin's ban or mute on the student while it lasts, or None."""
+    return conn.execute("SELECT * FROM restrictions WHERE tg_id=? AND kind=? AND (until IS NULL OR until > ?)",
+                        (tg_id, kind, datetime.now(timezone.utc).isoformat(timespec="seconds"))).fetchone()
+
+
+def _until_text(until: str | None) -> str:
+    return f"до {datetime.fromisoformat(until).astimezone(MSK).strftime('%d.%m.%Y %H:%M')}" if until else "бессрочно"
+
+
+def _ban_text(tg_id: int) -> str | None:
+    """What the bot says to a banned student instead of anything else."""
+    with db.session() as conn:
+        ban = _restriction(conn, tg_id, "ban")
+    if not ban:
+        return None
+    return (f"Ваш аккаунт заблокирован {_until_text(ban['until'])}."
+            + (f"\nПричина: {ban['reason']}" if ban["reason"] else "")
+            + f"\n\nЕсли это ошибка, напишите разработчику: @{admin.CRM_ADMIN}")
+
+
+def current_user(request: Request, tg: dict = Depends(current_tg_user)):
     """The student's row with the Telegram fields refreshed. A newcomer is not written down until they
-    consent (a tick on the last onboarding step): until then they get a row that lives only for this request."""
+    consent (a tick on the last onboarding step): until then they get a row that lives only for this request.
+    A banned student gets nothing but the ban (deleting the account stays open to them); every request of a
+    registered one marks the hour as active, for the admin panel's stats."""
     fields = {"tg_first": tg.get("first_name", ""), "tg_last": tg.get("last_name", ""),
               "username": tg.get("username", ""), "photo_url": tg.get("photo_url", "")}
     with db.session() as conn:
+        ban = _restriction(conn, tg["id"], "ban")
+        if ban and not (request.method == "DELETE" and request.url.path == "/api/account"):
+            raise HTTPException(403, {"banned": True, "until": ban["until"], "reason": ban["reason"],
+                                      "contact": admin.CRM_ADMIN})
         if not conn.execute("SELECT 1 FROM users WHERE tg_id=?", (tg["id"],)).fetchone():
             blank = dict.fromkeys(c[0] for c in conn.execute("SELECT * FROM users LIMIT 0").description)
             return {**blank, **fields, "tg_id": tg["id"]}
         conn.execute("UPDATE users SET tg_first=:tg_first, tg_last=:tg_last, username=:username, "
                      "photo_url=:photo_url, updated_at=datetime('now') WHERE tg_id=:id", {**fields, "id": tg["id"]})
+        local = datetime.now(MSK)
+        conn.execute("INSERT OR IGNORE INTO activity(tg_id, day, hour) VALUES(?, ?, ?)",
+                     (tg["id"], local.date().isoformat(), local.hour))
         return dict(conn.execute("SELECT * FROM users WHERE tg_id=?", (tg["id"],)).fetchone())
 
 
@@ -403,6 +461,129 @@ def consented_user(user=Depends(current_user)):
     if user["consent_version"] != CONSENT_VERSION:
         raise HTTPException(403, "Сначала нужно согласие на обработку персональных данных")
     return user
+
+
+def speaking_user(user=Depends(consented_user)):
+    """Writing anything others read (posts, comments, clubs, the nick, «о себе», the photo) is closed to a
+    student the admin muted; reading stays open."""
+    with db.session() as conn:
+        mute = _restriction(conn, user["tg_id"], "mute")
+    if mute:
+        raise HTTPException(403, f"Администратор ограничил вам публикации {_until_text(mute['until'])}"
+                                 + (f". Причина: {mute['reason']}" if mute["reason"] else ""))
+    return user
+
+
+# what the admin can switch off without a deploy (the admin panel's «Настройки»); all on by default
+FEATURES = {"registration": "Регистрация новых студентов", "friends": "Заявки в друзья",
+            "clubs_create": "Создание клубов", "posts": "Новые записи в клубах", "comments": "Комментарии"}
+FEATURE_OFF = {"registration": "Регистрация новых пользователей временно закрыта. Попробуйте позже.",
+               "friends": "Заявки в друзья временно отключены.",
+               "clubs_create": "Создание клубов временно отключено.",
+               "posts": "Новые записи временно отключены.",
+               "comments": "Комментарии временно отключены."}
+
+
+def app_config(conn) -> dict:
+    """The settings the admin changes from the panel: semester dates, the switches, the banner."""
+    try:
+        cfg = json.loads(db.get_meta(conn, "app_config") or "{}")
+    except ValueError:
+        cfg = {}
+    return {"semester": {"start": "2026-09-01", "session": "2027-01-03", **cfg.get("semester", {})},
+            "features": {k: True for k in FEATURES} | cfg.get("features", {}),
+            "banner": cfg.get("banner") or ""}
+
+
+def _feature(conn, name: str):
+    if not app_config(conn)["features"].get(name, True):
+        raise HTTPException(403, FEATURE_OFF[name])
+
+
+def _watch_words(conn, tg_id: int, place: str, text: str, blocked: bool = False):
+    """Swearing anywhere in what students write goes to the admin panel's log; only open posts are refused."""
+    if text and has_profanity(text):
+        conn.execute("INSERT INTO profanity_log(tg_id, place, body, blocked) VALUES(?, ?, ?, ?)",
+                     (tg_id, place, text[:1000], int(blocked)))
+
+
+def _not_frozen(club):
+    if club["frozen"]:
+        raise HTTPException(403, "Клуб заморожен администрацией: в нём сейчас нельзя писать и вступать")
+
+
+@app.get("/api/config")
+def public_config():
+    """What the app reads at launch: the semester's dates and the admin's banner."""
+    with db.session() as conn:
+        cfg = app_config(conn)
+    return {"semester": cfg["semester"], "banner": cfg["banner"], "features": cfg["features"]}
+
+
+class ReportIn(BaseModel):
+    kind: str
+    target: int
+    reason: str = Field(max_length=40)
+    note: str = Field("", max_length=500)
+
+
+REPORT_REASONS = ("Спам", "Оскорбления", "Мат", "Неприемлемое", "Обман", "Другое")
+REPORTS_PER_DAY = 20
+
+
+@app.post("/api/report")
+async def report(body: ReportIn, user=Depends(consented_user)):
+    """«Пожаловаться» on a post, a comment, a student or a club: it waits in the admin panel's queue,
+    with the text as it read then."""
+    me = user["tg_id"]
+    if body.kind not in ("post", "comment", "user", "club") or body.reason not in REPORT_REASONS:
+        raise HTTPException(400, "Выберите причину жалобы")
+    with db.session() as conn:
+        if conn.execute("SELECT COUNT(*) FROM reports WHERE reporter=? AND created_at > datetime('now', '-1 day')",
+                        (me,)).fetchone()[0] >= REPORTS_PER_DAY:
+            raise HTTPException(429, "Слишком много жалоб за день. Мы уже разбираемся.")
+        if body.kind == "post":
+            row = conn.execute("SELECT body, author FROM club_posts WHERE id=?", (body.target,)).fetchone()
+            snapshot = row and f"{row['body'] or '[фото]'}"
+        elif body.kind == "comment":
+            row = conn.execute("SELECT body FROM post_comments WHERE id=?", (body.target,)).fetchone()
+            snapshot = row and row["body"]
+        elif body.kind == "club":
+            row = conn.execute("SELECT name, about FROM clubs WHERE id=?", (body.target,)).fetchone()
+            snapshot = row and f"{row['name']}: {row['about']}"
+        else:
+            row = conn.execute("SELECT * FROM users WHERE tg_id=?", (body.target,)).fetchone()
+            snapshot = row and " · ".join(filter(None, (_display_name(row), row["bio"])))
+        if not row:
+            raise HTTPException(404, "Это уже удалено")
+        if conn.execute("SELECT 1 FROM reports WHERE reporter=? AND kind=? AND target=? AND status='open'",
+                        (me, body.kind, body.target)).fetchone():
+            return {"ok": True}
+        conn.execute("INSERT INTO reports(reporter, kind, target, reason, note, snapshot) VALUES(?, ?, ?, ?, ?, ?)",
+                     (me, body.kind, body.target, body.reason, _clean_about(body.note), (snapshot or "")[:1000]))
+    what = {"post": "запись", "comment": "комментарий", "user": "пользователя", "club": "клуб"}[body.kind]
+    await admin.alert(f"Новая жалоба на {what}: {body.reason}\n{(snapshot or '')[:200]}")
+    return {"ok": True}
+
+
+class FeedbackIn(BaseModel):
+    body: str = Field(max_length=4000)
+
+
+@app.post("/api/feedback")
+async def feedback(body: FeedbackIn, user=Depends(consented_user)):
+    """«Написать разработчику»: the message lands in the admin panel; the answer comes from the bot."""
+    text = _clean_about(body.body)
+    if len(text) < 3:
+        raise HTTPException(400, "Напишите пару слов")
+    with db.session() as conn:
+        if conn.execute("SELECT COUNT(*) FROM feedback WHERE tg_id=? AND created_at > datetime('now', '-1 day')",
+                        (user["tg_id"],)).fetchone()[0] >= 10:
+            raise HTTPException(429, "Сегодня вы уже много написали. Мы ответим, как только прочитаем.")
+        conn.execute("INSERT INTO feedback(tg_id, body) VALUES(?, ?)", (user["tg_id"], text[:2000]))
+        name = _display_name(user)
+    await admin.alert(f"Сообщение от {name}" + (f" (@{user['username']})" if user["username"] else "") + f":\n{text[:500]}")
+    return {"ok": True}
 
 
 # ---------- api ----------
@@ -478,6 +659,8 @@ def save_profile(body: ProfileIn, background: BackgroundTasks, user=Depends(curr
         if not g:
             raise HTTPException(400, "Такой группы нет")
         newcomer = not conn.execute("SELECT 1 FROM users WHERE tg_id=?", (user["tg_id"],)).fetchone()
+        if newcomer:
+            _feature(conn, "registration")
         conn.execute("INSERT INTO users(tg_id, tg_first, tg_last, username, photo_url) VALUES(?, ?, ?, ?, ?) "
                      "ON CONFLICT(tg_id) DO NOTHING",
                      (user["tg_id"], user["tg_first"], user["tg_last"], user["username"], user["photo_url"]))
@@ -534,6 +717,8 @@ def delete_account(user=Depends(current_user)):
                     "DELETE FROM reminders WHERE tg_id=?", "DELETE FROM open_buttons WHERE chat_id=?",
                     "DELETE FROM devices WHERE tg_id=?", "DELETE FROM logins WHERE tg_id=?",
                     "DELETE FROM install_links WHERE tg_id=?",
+                    "DELETE FROM activity WHERE tg_id=?", "DELETE FROM feedback WHERE tg_id=?",
+                    "DELETE FROM reports WHERE reporter=?", "DELETE FROM profanity_log WHERE tg_id=?",
                     "DELETE FROM users WHERE tg_id=?"):
             conn.execute(sql, (me,))
     with db.session() as conn:
@@ -550,13 +735,14 @@ class NicknameIn(BaseModel):
 
 
 @app.post("/api/profile/nickname")
-def save_nickname(body: NicknameIn, user=Depends(consented_user)):
+def save_nickname(body: NicknameIn, user=Depends(speaking_user)):
     """The name friends see, changeable any time; empty brings back the real name.
     The Telegram @tag is not stored as editable: it comes from Telegram on every request."""
     nick = " ".join("".join(ch for ch in body.nickname if ch.isprintable()).split())
     if nick and not 2 <= len(nick) <= NICK_MAX:
         raise HTTPException(400, f"Ник: от 2 до {NICK_MAX} символов")
     with db.session() as conn:
+        _watch_words(conn, user["tg_id"], "nickname", nick)
         conn.execute("UPDATE users SET nickname=?, updated_at=datetime('now') WHERE tg_id=?",
                      (nick or None, user["tg_id"]))
         user = dict(conn.execute("SELECT * FROM users WHERE tg_id=?", (user["tg_id"],)).fetchone())
@@ -568,12 +754,13 @@ class BioIn(BaseModel):
 
 
 @app.post("/api/profile/bio")
-def save_bio(body: BioIn, user=Depends(consented_user)):
+def save_bio(body: BioIn, user=Depends(speaking_user)):
     """A few words about yourself; empty removes them."""
     bio = _clean_about(body.bio)
     if len(bio) > BIO_MAX:
         raise HTTPException(400, f"Описание: не длиннее {BIO_MAX} символов")
     with db.session() as conn:
+        _watch_words(conn, user["tg_id"], "bio", bio)
         conn.execute("UPDATE users SET bio=?, updated_at=datetime('now') WHERE tg_id=?", (bio or None, user["tg_id"]))
         return _profile(conn, dict(conn.execute("SELECT * FROM users WHERE tg_id=?", (user["tg_id"],)).fetchone()))
 
@@ -611,7 +798,7 @@ async def _save_photo(request: Request) -> str:
 
 
 @app.post("/api/profile/avatar")
-async def upload_avatar(request: Request, user=Depends(consented_user)):
+async def upload_avatar(request: Request, user=Depends(speaking_user)):
     """A photo of your own instead of the Telegram one; the body is the image itself."""
     token = await _save_photo(request)
     with db.session() as conn:
@@ -1028,6 +1215,7 @@ def add_friend(other: int, user=Depends(consented_user)):
     """Send a request; if they already asked you, this accepts it."""
     me = user["tg_id"]
     with db.session() as conn:
+        _feature(conn, "friends")
         if not conn.execute("SELECT 1 FROM users WHERE tg_id=? AND real_name IS NOT NULL AND consent_at IS NOT NULL",
                             (other,)).fetchone():
             raise HTTPException(404, "Такого студента нет в приложении")
@@ -1177,7 +1365,7 @@ def _open_to(conn, club, me: int) -> bool:
 def _club_card(conn, club):
     return {"id": club["id"], "name": club["name"], "about": club["about"], "category": club["category"],
             "visibility": club["visibility"], "photo_url": f"/avatars/{club['avatar']}.jpg" if club["avatar"] else "",
-            "members": _club_size(conn, club["id"])}
+            "members": _club_size(conn, club["id"]), "official": bool(club["official"]), "frozen": bool(club["frozen"])}
 
 
 def _can_view(conn, club, me: int, role: str | None) -> bool:
@@ -1300,10 +1488,12 @@ def club(club_id: int, user=Depends(consented_user)):
 
 
 @app.post("/api/clubs")
-def create_club(body: ClubIn, user=Depends(consented_user)):
+def create_club(body: ClubIn, user=Depends(speaking_user)):
     """Found a club and become its owner; a student owns at most CLUB_OWN_MAX clubs."""
     me = user["tg_id"]
     with db.session() as conn:
+        _feature(conn, "clubs_create")
+        _watch_words(conn, me, "club", f"{body.name or ''} {body.about or ''}".strip())
         if _owned(conn, me) >= CLUB_OWN_MAX:
             raise HTTPException(409, f"Своих клубов может быть не больше {CLUB_OWN_MAX}. Чтобы создать новый, "
                                      "передайте один из своих клубов другому участнику или удалите его.")
@@ -1317,11 +1507,12 @@ def create_club(body: ClubIn, user=Depends(consented_user)):
 
 
 @app.post("/api/clubs/{club_id}/settings")
-def club_settings(club_id: int, body: ClubIn, user=Depends(consented_user)):
+def club_settings(club_id: int, body: ClubIn, user=Depends(speaking_user)):
     me = user["tg_id"]
     with db.session() as conn:
-        _club_row(conn, club_id)
+        _not_frozen(_club_row(conn, club_id))
         _require_role(conn, club_id, me, "owner", "admin")
+        _watch_words(conn, me, "club", f"{body.name or ''} {body.about or ''}".strip())
         fields = _club_fields(conn, body, club_id)
         if fields:
             conn.execute(f"UPDATE clubs SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?", (*fields.values(), club_id))
@@ -1338,9 +1529,9 @@ def _set_club_avatar(club_id: int, me: int, token: str | None):
 
 
 @app.post("/api/clubs/{club_id}/avatar")
-async def club_avatar(club_id: int, request: Request, user=Depends(consented_user)):
+async def club_avatar(club_id: int, request: Request, user=Depends(speaking_user)):
     with db.session() as conn:
-        _club_row(conn, club_id)
+        _not_frozen(_club_row(conn, club_id))
         _require_role(conn, club_id, user["tg_id"], "owner", "admin")
     return _set_club_avatar(club_id, user["tg_id"], await _save_photo(request))
 
@@ -1360,6 +1551,7 @@ def join_club(club_id: int, user=Depends(consented_user)):
     with db.session() as conn:
         club = _club_row(conn, club_id)
         if not _member_role(conn, club_id, me):
+            _not_frozen(club)
             if not (_invited(conn, club_id, me) or _open_to(conn, club, me)):
                 raise HTTPException(403, "В этот клуб вступают только друзья владельца" if club["visibility"] == "friends"
                                     else "В этот клуб вступают по заявке" if club["visibility"] == "closed"
@@ -1416,7 +1608,7 @@ def _erase_club(conn, club_id: int) -> list:
 def invite_to_club(club_id: int, other: int, user=Depends(consented_user)):
     me = user["tg_id"]
     with db.session() as conn:
-        _club_row(conn, club_id)
+        _not_frozen(_club_row(conn, club_id))
         _require_role(conn, club_id, me, "owner", "admin")
         if not conn.execute("SELECT 1 FROM users WHERE tg_id=? AND real_name IS NOT NULL AND group_id IS NOT NULL "
                             "AND consent_at IS NOT NULL", (other,)).fetchone():
@@ -1439,6 +1631,7 @@ def request_to_join(club_id: int, user=Depends(consented_user)):
             raise HTTPException(409, "Вы уже в клубе")
         if club["visibility"] != "closed":
             raise HTTPException(400, "В этот клуб заявки не подают")
+        _not_frozen(club)
         if conn.execute("INSERT OR IGNORE INTO club_requests(club_id, tg_id) VALUES(?, ?)", (club_id, me)).rowcount:
             for r in conn.execute("SELECT tg_id FROM club_members WHERE club_id=? AND role IN ('owner', 'admin')", (club_id,)).fetchall():
                 _notify(conn, r["tg_id"], "club_request", me, club_id)
@@ -1462,6 +1655,7 @@ def accept_request(club_id: int, other: int, user=Depends(consented_user)):
     """The owner or an admin lets the student in."""
     me = user["tg_id"]
     with db.session() as conn:
+        _not_frozen(_club_row(conn, club_id))
         _require_role(conn, club_id, me, "owner", "admin")
         if not conn.execute("DELETE FROM club_requests WHERE club_id=? AND tg_id=?", (club_id, other)).rowcount:
             raise HTTPException(404, "Заявки уже нет")
@@ -1663,15 +1857,18 @@ def _encode_post_photo(raw: bytes) -> bytes:
 
 
 @app.post("/api/clubs/{club_id}/posts")
-async def create_post(club_id: int, body: PostIn, user=Depends(consented_user)):
+async def create_post(club_id: int, body: PostIn, user=Depends(speaking_user)):
     """The owner and admins post text, a photo, or both."""
     me = user["tg_id"]
     with db.session() as conn:
-        _club_row(conn, club_id)
+        _feature(conn, "posts")
+        _not_frozen(_club_row(conn, club_id))
         role = _require_role(conn, club_id, me, "owner", "admin")
     text = _clean_about(body.body)
     if len(text) > POST_MAX:
         raise HTTPException(400, f"Запись: не длиннее {POST_MAX} символов")
+    with db.session() as conn:
+        _watch_words(conn, me, "post", text, blocked=body.public)
     if body.public and has_profanity(text):
         raise HTTPException(400, "В записях для всех нельзя использовать мат. Уберите его или выключите «Видна всем», "
                                  "и запись увидят только участники клуба.")
@@ -1760,10 +1957,12 @@ class CommentIn(BaseModel):
 
 
 @app.post("/api/clubs/{club_id}/posts/{post_id}/comments")
-def add_comment(club_id: int, post_id: int, body: CommentIn, user=Depends(consented_user)):
+def add_comment(club_id: int, post_id: int, body: CommentIn, user=Depends(speaking_user)):
     """Every member may comment, unless the post was published with comments off."""
     me = user["tg_id"]
     with db.session() as conn:
+        _feature(conn, "comments")
+        _not_frozen(_club_row(conn, club_id))
         role = _require_role(conn, club_id, me, "owner", "admin", "member")
         post = _club_post(conn, club_id, post_id)
         if post["comments_off"]:
@@ -1773,6 +1972,7 @@ def add_comment(club_id: int, post_id: int, body: CommentIn, user=Depends(consen
             raise HTTPException(400, "Напишите комментарий")
         if len(text) > COMMENT_MAX:
             raise HTTPException(400, f"Комментарий: не длиннее {COMMENT_MAX} символов")
+        _watch_words(conn, me, "comment", text)
         cur = conn.execute("INSERT INTO post_comments(post_id, author, body) VALUES(?, ?, ?)", (post_id, me, text))
         _notify(conn, post["author"], "comment", me, club_id, post_id, text)
         return _comment_card(conn, conn.execute("SELECT * FROM post_comments WHERE id=?", (cur.lastrowid,)).fetchone(), me, role)
@@ -2032,6 +2232,10 @@ def consent_page():
     return FileResponse(ROOT / "webapp" / "consent.html")
 
 
+from . import admin  # noqa: E402  (it reads this module's helpers)
+
+app.include_router(admin.router)
+app.mount("/crm", StaticFiles(directory=ROOT / "webapp-admin", html=True), name="crm")
 app.mount("/avatars", StaticFiles(directory=AVATARS), name="avatars")
 app.mount("/posts", StaticFiles(directory=POSTS), name="posts")
 app.mount("/", StaticFiles(directory=ROOT / "webapp", html=True), name="webapp")

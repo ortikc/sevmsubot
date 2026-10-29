@@ -125,6 +125,7 @@ const icon = {
   left: svg('<path d="M14.5 5.5 8 12l6.5 6.5"/>'),
   right: svg('<path d="M9.5 5.5 16 12l-6.5 6.5"/>'),
   check: svg('<path d="M5 12.5 10 17.5 19 7"/>'),
+  flag: svg('<path d="M5.5 21V4.5M5.5 4.5h11.5l-2.2 4 2.2 4H5.5"/>'),
   camera: svg('<path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2L9 5h6l1.5 2h2A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5Z"/><circle cx="12" cy="12.6" r="3.2"/>'),
   lock: svg('<rect x="5.5" y="10.5" width="13" height="9.5" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>'),
   smile: svg('<circle cx="12" cy="12" r="8.5"/><path d="M8.6 14.2c.9 1.2 2 1.8 3.4 1.8s2.5-.6 3.4-1.8M9.3 9.8h.01M14.7 9.8h.01"/>'),
@@ -238,6 +239,10 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     let msg = res.statusText;
     try { msg = (await res.json()).detail || msg; } catch (_) {}
+    if (res.status === 403 && msg?.banned) {
+      renderBanned(msg);
+      throw new HttpError(403, "Аккаунт заблокирован");
+    }
     throw new HttpError(res.status, msg);
   }
   return res.json();
@@ -549,6 +554,18 @@ const daySkeleton = () => `
   <i class="sk" style="width:40%;height:18px;margin-top:28px"></i>
   <i class="sk" style="width:100%;height:70px;margin-top:12px;border-radius:16px"></i>
   <i class="sk" style="width:100%;height:70px;margin-top:8px;border-radius:16px"></i>`;
+
+/** the admin banned this account: nothing else opens, the bot says the same */
+function renderBanned(ban) {
+  state.banned = state.gone = true;
+  showTabbar(false);
+  try { closeSheet(true); } catch (_) {}
+  const until = ban.until ? `до ${new Date(ban.until).toLocaleString("ru-RU", { timeZone: "Europe/Moscow", day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" })}` : "бессрочно";
+  app.innerHTML = `<div class="center"><p><strong>Аккаунт заблокирован</strong>Администратор заблокировал ваш аккаунт ${until}.${
+    ban.reason ? `<br>Причина: ${esc(ban.reason)}` : ""}</p>
+    <button class="btn inline" id="banned-contact">Написать разработчику</button></div>`;
+  document.getElementById("banned-contact").addEventListener("click", () => openOut(`https://t.me/${ban.contact || DEVELOPER}`));
+}
 
 function renderError(err, retry) {
   showTabbar(false);
@@ -2457,13 +2474,15 @@ function clubAvatar(c, cls = "") {
   const img = c.photo_url ? `<img src="${esc(c.photo_url)}" alt="" onerror="this.parentNode.textContent=this.parentNode.dataset.i">` : "";
   return `<span class="avatar club-avatar ${cls}" style="--c: var(--hue-${hue})" data-i="${ini}" aria-hidden="true">${img || ini}</span>`;
 }
+const officialMark = (c) => c.official
+  ? `<span class="official" title="Официальный клуб" aria-label="Официальный клуб">${icon.check}</span>` : "";
 const clubPill = (club) =>
   `<small class="club-pill" style="--c: var(--hue-${(CLUB_CATS[club.category] || CLUB_CATS.other)[1]})" title="Клуб">${esc(club.name)}</small>`;
 function clubRow(c, trailing = "", sub = esc(clubMeta(c)), cls = "") {
   return `
     <li class="person ${cls}" role="button" tabindex="0" data-club="${c.id}">
       ${clubAvatar(c)}
-      <div class="person-text"><b>${esc(c.name)}</b><span>${sub}</span></div>
+      <div class="person-text"><b>${esc(c.name)}${officialMark(c)}</b><span>${sub}</span></div>
       ${trailing}
     </li>`;
 }
@@ -2760,10 +2779,11 @@ async function renderClubPage() {
   const hero = `
     <div class="club-hero">
       ${clubAvatar(c, "big")}
-      <h1>${esc(c.name)}</h1>
-      <p>${esc(clubMeta(c))}</p>
+      <h1>${esc(c.name)}${officialMark(c)}</h1>
+      <p>${c.official ? "Официальный клуб · " : ""}${esc(clubMeta(c))}</p>
     </div>
-    ${c.about ? `<p class="club-about">${esc(c.about)}</p>` : ""}`;
+    ${c.about ? `<p class="club-about">${esc(c.about)}</p>` : ""}
+    ${c.frozen ? `<p class="note club-action"><strong>Клуб заморожен</strong>Администрация приостановила клуб: пока в нём нельзя публиковать, комментировать и вступать.</p>` : ""}`;
   const base = `/api/clubs/${c.id}`;
 
   v.section ||= "feed";
@@ -2843,9 +2863,11 @@ function renderMembers(host, c) {
       : c.member_list.length > 1 ? `<p class="search-hint">Нажмите на участника, чтобы добавить его в друзья или написать ему в Telegram${
       role === "owner" ? ". Там же можно сделать его админом, передать права владельца или исключить."
       : role === "admin" ? ". Обычных участников там же можно исключить." : "."}</p>` : ""}
-    ${invites}${exit}`;
+    ${invites}${exit}
+    ${role !== "owner" ? `<button class="btn-text" id="club-report">Пожаловаться на клуб</button>` : ""}`;
 
   const base = `/api/clubs/${c.id}`;
+  host.querySelector("#club-report")?.addEventListener("click", () => openReportSheet("club", c.id, "этим клубом"));
   host.querySelector("#club-leave")?.addEventListener("click", (e) => {
     if (confirmTap(e.currentTarget, "Точно выйти? Нажмите ещё раз")) clubAct(e.currentTarget, () => api(`${base}/leave`, { method: "POST" }), clubToList);
   });
@@ -2910,7 +2932,8 @@ function postHtml(p) {
         ${personAvatar(p.author, "post-avatar")}
         <div class="post-who"><b>${esc(p.author.name)}</b><span class="post-meta"><time datetime="${esc(p.created_at)}Z">${postTime(p.created_at)}</time>${
           member && p.public ? `<span class="post-vis">${icon.globe}видна всем</span>` : ""}</span></div>`}
-        ${p.can_delete ? `<button class="post-del" data-del aria-label="Удалить запись">${icon.trash}</button>` : ""}
+        ${p.can_delete ? `<button class="post-del" data-del aria-label="Удалить запись">${icon.trash}</button>`
+          : `<button class="post-del post-flag" data-flag aria-label="Пожаловаться на запись">${icon.flag}</button>`}
       </header>
       ${p.body ? `<p class="post-body">${linkify(p.body)}</p>` : ""}
       ${p.photo_url ? `<button class="post-photo" data-photo aria-label="Открыть фото"><img src="${esc(p.photo_url)}" alt="" loading="lazy"></button>` : ""}
@@ -2968,6 +2991,7 @@ function bindPost(article, p) {
   article.querySelector("[data-comments]")?.addEventListener("click", () => openComments(p));
   article.querySelector("[data-photo]")?.addEventListener("click", () => openPhoto(p.photo_url));
   article.querySelectorAll(".post-body a").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); openOut(a.href); }));
+  article.querySelector("[data-flag]")?.addEventListener("click", () => openReportSheet("post", p.id, "этой записью"));
   const del = article.querySelector("[data-del]");
   del?.addEventListener("click", async () => {
     if (!del.dataset.sure) {
@@ -3047,7 +3071,8 @@ const commentHtml = (cm) => `
       <div class="comment-who"><b>${esc(cm.author.name)}</b>${groupTag(cm.author.group)}<time>${postTime(cm.created_at)}</time></div>
       <p class="comment-body">${linkify(cm.body)}</p>
     </div>
-    ${cm.can_delete ? `<button class="post-del" data-cdel="${cm.id}" aria-label="Удалить комментарий">${icon.trash}</button>` : ""}
+    ${cm.can_delete ? `<button class="post-del" data-cdel="${cm.id}" aria-label="Удалить комментарий">${icon.trash}</button>`
+      : `<button class="post-del post-flag" data-cflag="${cm.id}" aria-label="Пожаловаться на комментарий">${icon.flag}</button>`}
   </div>`;
 
 function openComments(p) {
@@ -3094,6 +3119,8 @@ function openComments(p) {
       draw();
       toBottom(sheet.querySelector(".sheet-panel"));
     });
+    panel.querySelectorAll("[data-cflag]").forEach((b) => b.addEventListener("click", () =>
+      openReportSheet("comment", Number(b.dataset.cflag), "этим комментарием")));
     panel.querySelectorAll("[data-cdel]").forEach((b) => b.addEventListener("click", async () => {
       if (!b.dataset.sure) {
         b.dataset.sure = "1";
@@ -3628,10 +3655,87 @@ function bindProfileBody() {
   app.querySelectorAll("[data-open-doc]").forEach((b) => b.addEventListener("click", () => openDocSheet(b.dataset.openDoc)));
   document.getElementById("delete-account")?.addEventListener("click", openDeleteSheet);
   bindPhoneSection();
-  document.getElementById("report")?.addEventListener("click", () => {
-    haptic();
-    const url = `https://t.me/${DEVELOPER}`;
-    if (tg?.openTelegramLink && inTelegram) tg.openTelegramLink(url); else window.open(url, "_blank");
+  document.getElementById("report")?.addEventListener("click", openFeedbackSheet);
+}
+
+function openFeedbackSheet() {
+  haptic();
+  openSheet(`
+    <div class="sheet-head"><div>
+      <h2 id="sheet-title">Написать разработчику</h2>
+      <p>Нашли ошибку, есть идея или вопрос? Напишите, ответ придёт в чат с ботом.</p>
+    </div></div>
+    <form class="field nick-form" id="fb-form" novalidate>
+      <textarea id="fb-body" maxlength="2000" rows="5" aria-label="Сообщение" placeholder="Например, в среду у ПМ-201 не показывается третья пара"></textarea>
+      <p class="err" id="fb-err" hidden></p>
+      <button class="btn" type="submit">Отправить</button>
+    </form>
+    <button class="btn-text" id="fb-tg">Или напишите в Telegram: @${DEVELOPER}</button>`, (panel) => {
+    const form = panel.querySelector("#fb-form");
+    const err = panel.querySelector("#fb-err");
+    panel.querySelector("#fb-tg").addEventListener("click", () => openOut(`https://t.me/${DEVELOPER}`));
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = form.querySelector(".btn");
+      btn.disabled = true;
+      try {
+        await api("/api/feedback", { method: "POST", body: JSON.stringify({ body: panel.querySelector("#fb-body").value }) });
+        haptic("success");
+        openSheet(`<div class="sheet-head"><div><h2 id="sheet-title">Отправлено</h2><p>Спасибо! Разработчик прочитает и ответит в чате с ботом.</p></div></div>
+          <button class="btn" id="fb-done">Готово</button>`, (p) => p.querySelector("#fb-done").addEventListener("click", () => closeSheet()));
+      } catch (e2) {
+        btn.disabled = false;
+        err.textContent = errText(e2, "Не получилось отправить. Проверьте интернет.");
+        err.hidden = false;
+        haptic("error");
+      }
+    });
+  });
+}
+
+/* ---------- «Пожаловаться»: a post, a comment, a person or a club goes to the admin's queue ---------- */
+const REPORT_REASONS = ["Спам", "Оскорбления", "Мат", "Неприемлемое", "Обман", "Другое"];
+function openReportSheet(kind, target, what) {
+  haptic();
+  let reason = "";
+  openSheet(`
+    <div class="sheet-head"><div>
+      <h2 id="sheet-title">Пожаловаться</h2>
+      <p>Что не так с ${what}? Жалобу увидит только администратор, автор не узнает, кто её отправил.</p>
+    </div></div>
+    <ul class="options" role="radiogroup" aria-label="Причина">
+      ${REPORT_REASONS.map((r) => `<li><button role="radio" data-reason="${r}" aria-checked="false"><span>${r}</span><span class="check">${icon.check}</span></button></li>`).join("")}
+    </ul>
+    <form class="field nick-form" id="rep-form" novalidate>
+      <textarea id="rep-note" maxlength="500" rows="2" aria-label="Подробности" placeholder="Подробности, если нужно"></textarea>
+      <p class="err" id="rep-err" hidden></p>
+      <button class="btn" type="submit" disabled>Отправить жалобу</button>
+    </form>`, (panel) => {
+    const form = panel.querySelector("#rep-form");
+    const btn = form.querySelector(".btn");
+    const err = panel.querySelector("#rep-err");
+    panel.querySelectorAll("[data-reason]").forEach((b) => b.addEventListener("click", () => {
+      haptic();
+      reason = b.dataset.reason;
+      panel.querySelectorAll("[data-reason]").forEach((x) => x.setAttribute("aria-checked", String(x === b)));
+      btn.disabled = false;
+    }));
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!reason) return;
+      btn.disabled = true;
+      try {
+        await api("/api/report", { method: "POST", body: JSON.stringify({ kind, target, reason, note: panel.querySelector("#rep-note").value }) });
+        haptic("success");
+        openSheet(`<div class="sheet-head"><div><h2 id="sheet-title">Жалоба отправлена</h2><p>Спасибо! Администратор посмотрит и примет меры.</p></div></div>
+          <button class="btn" id="rep-done">Готово</button>`, (p) => p.querySelector("#rep-done").addEventListener("click", () => closeSheet()));
+      } catch (e2) {
+        btn.disabled = false;
+        err.textContent = errText(e2, "Не получилось отправить. Проверьте интернет.");
+        err.hidden = false;
+        haptic("error");
+      }
+    });
   });
 }
 
@@ -4128,8 +4232,10 @@ async function openFriendSheet(p) {
     openSheet(`${head()}
       <div class="fdays">${chips}</div>
       ${rows ? `<ul class="pairs">${rows}</ul>` : `<p class="note"><strong>Пар нет</strong>${dayTitle(selected)}: свободный день.</p>`}
-      <button class="btn-text danger" id="unfriend">Удалить из друзей</button>`, (panel) => {
+      <button class="btn-text danger" id="unfriend">Удалить из друзей</button>
+      <button class="btn-text" id="report-user">Пожаловаться</button>`, (panel) => {
       panel.querySelectorAll("[data-fday]").forEach((b) => b.addEventListener("click", () => { haptic(); selected = b.dataset.fday; draw(); }));
+      panel.querySelector("#report-user").addEventListener("click", () => openReportSheet("user", p.tg_id, "этим пользователем"));
       bindFlames(panel);
       const un = panel.querySelector("#unfriend");
       un.addEventListener("click", async () => {
@@ -4267,7 +4373,7 @@ function settingsView() {
 
     <h2 class="group-label">Помощь</h2>
     <ul class="options">
-      <li><button id="report"><span>Сообщить об ошибке<small>Написать разработчику @${DEVELOPER}</small></span>${icon.right}</button></li>
+      <li><button id="report"><span>Написать разработчику<small>Ошибка, идея или вопрос: ответ придёт от бота</small></span>${icon.right}</button></li>
     </ul>
     <p class="source">Версия ${APP_VERSION} · расписание с raspisanie.sev.msu.ru</p>`;
 }
@@ -4347,7 +4453,43 @@ function switchTheme(pref, x, y) {
    segments near the mouse lift, and a tapped segment shows its week. */
 
 // the autumn semester runs from 1 September to the winter session; change here when the dates change
-const SEMESTER = { start: "2026-09-01", session: "2027-01-03" };
+let SEMESTER = { start: "2026-09-01", session: "2027-01-03" };   // the admin panel's «Настройки» override it (loadConfig)
+
+/* ---------- what the admin sets without a deploy: the semester's dates and a banner over the app ---------- */
+const CONFIG_KEY = "msu.config", BANNER_KEY = "msu.banner.closed";
+function applyConfig(cfg) {
+  if (!cfg) return;
+  if (cfg.semester?.start && cfg.semester?.session) SEMESTER = { start: cfg.semester.start, session: cfg.semester.session };
+  showBanner(cfg.banner || "");
+}
+async function loadConfig() {
+  let cfg = null;
+  try { cfg = JSON.parse(localStorage.getItem(CONFIG_KEY) || "null"); } catch (_) {}
+  applyConfig(cfg);   // the last one known first: offline, or before the answer
+  try {
+    const res = await fetch("/api/config");
+    if (res.ok) {
+      cfg = await res.json();
+      try { localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg)); } catch (_) {}
+      applyConfig(cfg);
+    }
+  } catch (_) {}
+}
+function showBanner(text) {
+  let closed = "";
+  try { closed = localStorage.getItem(BANNER_KEY) || ""; } catch (_) {}
+  document.querySelector(".admin-banner")?.remove();
+  if (!text || closed === text) return;
+  const el = Object.assign(document.createElement("div"), { className: "admin-banner" });
+  el.setAttribute("role", "status");
+  el.innerHTML = `<p>${esc(text)}</p><button aria-label="Закрыть">${icon.close || "×"}</button>`;
+  el.querySelector("button").addEventListener("click", () => {
+    haptic();
+    try { localStorage.setItem(BANNER_KEY, text); } catch (_) {}
+    el.remove();
+  });
+  document.body.append(el);
+}
 
 function semesterInfo(t = now()) {
   const day = 86400000;
@@ -5454,7 +5596,7 @@ async function load() {
   if (inOtherApp && /^#login=[\w-]+\.[\w-]+$/.test(location.hash)) return renderOpenOutside();
   const handoff = inTelegram ? null : await takeHandoff();
   try {
-    const [me, catalog] = await Promise.all([api("/api/me"), api("/api/catalog")]);
+    const [me, catalog] = await Promise.all([api("/api/me"), api("/api/catalog"), loadConfig()]);
     state.me = me;
     state.catalog = catalog;
     state.scheduleView = viewPref();
@@ -5468,7 +5610,7 @@ async function load() {
     offerInstall();
     maybeShowGuide(Boolean(handoff?.ok));
   } catch (e) {
-    if (state.signingIn) return;
+    if (state.signingIn || state.banned) return;
     if (e instanceof HttpError && e.status === 401 && !inTelegram) return renderSignIn(handoff?.note || "");
     console.error(e);
     renderError(e, () => boot({ greet: false }));

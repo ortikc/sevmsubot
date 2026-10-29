@@ -169,6 +169,82 @@ CREATE TABLE IF NOT EXISTS meta (
     key         TEXT PRIMARY KEY,
     value       TEXT
 );
+
+-- ---------- the CRM: what the developer's admin panel (admin.sevstud.site) reads and writes ----------
+CREATE TABLE IF NOT EXISTS activity (
+    tg_id       INTEGER NOT NULL,       -- who opened the app: one row per student per hour they were in it
+    day         TEXT NOT NULL,          -- ISO date, Moscow time
+    hour        INTEGER NOT NULL,       -- 0..23, Moscow time
+    PRIMARY KEY (tg_id, day, hour)
+);
+CREATE INDEX IF NOT EXISTS activity_by_day ON activity(day);
+CREATE TABLE IF NOT EXISTS restrictions (
+    tg_id       INTEGER NOT NULL,       -- not tied to users: a ban outlives a deleted account
+    kind        TEXT NOT NULL,          -- ban (no app, no bot) | mute (reads, but may not write or change the profile)
+    until       TEXT,                   -- UTC ISO; NULL = until lifted
+    reason      TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (tg_id, kind)
+);
+CREATE TABLE IF NOT EXISTS reports (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    reporter    INTEGER NOT NULL,
+    kind        TEXT NOT NULL,          -- post | comment | user | club
+    target      INTEGER NOT NULL,       -- the post's, comment's, student's or club's id
+    reason      TEXT NOT NULL,
+    note        TEXT NOT NULL DEFAULT '',
+    snapshot    TEXT NOT NULL DEFAULT '',   -- what was reported, as it read then: it may be gone by the time it is looked at
+    status      TEXT NOT NULL DEFAULT 'open',   -- open | done | dismissed
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS reports_by_status ON reports(status, id);
+CREATE TABLE IF NOT EXISTS feedback (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tg_id       INTEGER NOT NULL,       -- «Написать разработчику» in the app
+    body        TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    read_at     TEXT,
+    reply       TEXT,                   -- sent to the student by the bot
+    replied_at  TEXT
+);
+CREATE TABLE IF NOT EXISTS profanity_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tg_id       INTEGER NOT NULL,
+    place       TEXT NOT NULL,          -- post | comment | nickname | bio | club
+    body        TEXT NOT NULL,
+    blocked     INTEGER NOT NULL DEFAULT 0,   -- the filter turned it away (an open post)
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS broadcasts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    body        TEXT NOT NULL,
+    segment     TEXT NOT NULL DEFAULT '{}',   -- JSON: faculty_id, course, group_id, active (days)
+    button      INTEGER NOT NULL DEFAULT 1,   -- with «Открыть расписание» under it
+    send_at     TEXT NOT NULL,                -- UTC ISO
+    status      TEXT NOT NULL DEFAULT 'scheduled',   -- scheduled | sending | done | cancelled
+    total       INTEGER NOT NULL DEFAULT 0,
+    sent        INTEGER NOT NULL DEFAULT 0,
+    failed      INTEGER NOT NULL DEFAULT 0,   -- mostly students who blocked the bot
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at TEXT
+);
+CREATE TABLE IF NOT EXISTS schedule_changes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id    INTEGER NOT NULL,
+    at          TEXT NOT NULL DEFAULT (datetime('now')),
+    added       INTEGER NOT NULL,
+    removed     INTEGER NOT NULL,
+    details     TEXT NOT NULL DEFAULT '[]'    -- JSON: a few lines like "+ 12.11 10:40 Математический анализ"
+);
+CREATE TABLE IF NOT EXISTS admin_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          TEXT NOT NULL DEFAULT (datetime('now')),
+    action      TEXT NOT NULL,          -- what was done, in words, for the journal
+    target      TEXT NOT NULL DEFAULT '',
+    undo        TEXT,                   -- JSON of how to take it back; NULL = cannot be
+    undone_at   TEXT
+);
 """
 
 
@@ -214,6 +290,13 @@ MIGRATIONS = {
     "club_posts": [
         ("comments_off", "INTEGER NOT NULL DEFAULT 0"),  # the author closed the post to comments
         ("public", "INTEGER NOT NULL DEFAULT 0"),        # anyone who may open the club reads it, not just members
+    ],
+    "clubs": [
+        ("frozen", "INTEGER NOT NULL DEFAULT 0"),        # the admin froze it: no posts, comments or new members
+        ("official", "INTEGER NOT NULL DEFAULT 0"),      # the admin marked it «Официальный клуб»
+    ],
+    "groups": [
+        ("sync_error", "TEXT"),                          # why the last sync of the group failed; NULL = it worked
     ],
     "reminders": [
         ("lead", "INTEGER NOT NULL DEFAULT 10"),

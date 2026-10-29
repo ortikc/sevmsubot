@@ -37,6 +37,7 @@ class Bot:
         self.on_login_answer = None # (sender, code, yes) -> text: the student's answer under that question
         self.on_app = None          # async (chat_id) -> None: /app sends the offer of the app for the phone again
         self.on_app_declined = None # (sender) -> text: «Нет, не надо» under that offer
+        self.is_banned = None       # (tg_id) -> text | None: what a student the admin banned hears instead of anything
         self.username = None        # the bot's @name, known after setup()
         self.api = f"https://api.telegram.org/bot{token}"
         self.client = httpx.AsyncClient(timeout=40)
@@ -164,6 +165,10 @@ class Bot:
         if not chat:
             return
         sender = (msg.get("from", {}).get("username") or "").lower()
+        banned = self.is_banned and self.is_banned(msg.get("from", {}).get("id"))
+        if banned:
+            await self.call("sendMessage", chat_id=chat, text=banned)
+            return
         if (msg.get("text") or "").startswith("/emoji") and sender == OWNER:
             await self.set_custom_emoji(msg)
             return
