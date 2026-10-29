@@ -17,10 +17,10 @@ EMOJI_SLOTS = {"alarm": "⏰", "sun": "☀️", "clock": "🕘", "pin": "📍", 
 EMOJI_FILE = Path(__file__).resolve().parent.parent / "data" / "emoji.json"
 # Telegram lets a bot use Premium (custom) emoji in private chats when the bot's owner has Premium
 OWNER = os.getenv("BOT_OWNER", "ortikc").lstrip("@").lower()
-# fixed Premium emoji from Telegram's own animated set (RestrictedEmoji, «Animated Emoji»): the same emoji as
-# everyone knows, only alive; slot -> (plain fallback, custom_emoji_id)
+# fixed Premium emoji, slot -> (plain fallback, custom_emoji_id): the greeting's wave is the chick of Chickling
+# Emoji (ChicklingEmoji), the rest come from Telegram's own animated set (RestrictedEmoji, «Animated Emoji»)
 PACK_EMOJI = {
-    "wave": ("👋", "5472055112702629499"),
+    "wave": ("👋", "5294461573677462235"),
     "down": ("👇", "5470177992950946662"),
     "phone": ("📲", "5406809207947142040"),
 }
