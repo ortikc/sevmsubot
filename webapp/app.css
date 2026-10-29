@@ -248,7 +248,7 @@ svg { display: block; }
 
 /* digits that roll like a counter's drums (rollTo): each drum is a column 0–9 moved to its digit.
    overflow: clip keeps a drum's baseline its digit's, so the digits sit on the line with the text around them */
-x-roll { display: inline; }
+x-roll { display: inline; white-space: nowrap; }
 x-drums { display: inline-flex; }
 x-drum { display: block; height: 1.2em; line-height: 1.2em; overflow: hidden; overflow: clip; }
 x-col {
@@ -983,7 +983,7 @@ a.btn[aria-disabled="true"] { opacity: 0.45; pointer-events: none; }
   display: inline-block; margin-left: 6px; padding: 2px 8px; border-radius: 999px;
   background: var(--raised); color: var(--text); font-size: 12px; font-style: normal; font-weight: 600; vertical-align: 1px;
 }
-.sem-head b { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; transition: color 300ms var(--ease); }
+.sem-head b { flex: none; white-space: nowrap; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; transition: color 300ms var(--ease); }
 .sem-bar { display: flex; gap: 3px; margin-top: 12px; padding: 4px 0; }
 .sem-bar i {
   flex: 1; height: 12px; border-radius: 4px; background: var(--raised); cursor: pointer; transform-origin: center;
