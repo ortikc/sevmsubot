@@ -89,6 +89,10 @@ html, body {
   -webkit-tap-highlight-color: transparent;
   text-size-adjust: 100%;
 }
+/* nothing may stick out past the right edge, even for a moment: a new day, the week or the stats slide in 28px
+   from the right, and a phone that sees the page grow wider re-lays the whole page out at each frame of the slide
+   (the stutter going left to right, not right to left). Clipped at the root, the page is never wider than the screen */
+html { overflow-x: clip; }
 body { min-height: 100vh; min-height: var(--tg-viewport-stable-height, 100vh); overscroll-behavior: none; overflow-x: clip; }
 
 /* the owner's halo: a soft dark-blue light in the top-left corner, fixed behind everything */
