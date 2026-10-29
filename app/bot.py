@@ -17,11 +17,18 @@ EMOJI_SLOTS = {"alarm": "⏰", "sun": "☀️", "clock": "🕘", "pin": "📍", 
 EMOJI_FILE = Path(__file__).resolve().parent.parent / "data" / "emoji.json"
 # Telegram lets a bot use Premium (custom) emoji in private chats when the bot's owner has Premium
 OWNER = os.getenv("BOT_OWNER", "ortikc").lstrip("@").lower()
+# fixed Premium emoji from Telegram's own animated set (RestrictedEmoji, «Animated Emoji»): the same emoji as
+# everyone knows, only alive; slot -> (plain fallback, custom_emoji_id)
+PACK_EMOJI = {
+    "wave": ("👋", "5472055112702629499"),
+    "down": ("👇", "5470177992950946662"),
+    "phone": ("📲", "5406809207947142040"),
+}
 
-GREETING = (
-    "Привет! Это расписание Севастопольского филиала МГУ.\n"
-    "Нажмите кнопку ниже, чтобы открыть своё расписание."
-)
+
+def greeting_html(e) -> str:
+    return (f"{e('wave')} Привет! Это расписание Севастопольского филиала МГУ.\n"
+            f"{e('down')} Нажмите кнопку ниже, чтобы открыть своё расписание.")
 
 
 class Bot:
@@ -53,20 +60,20 @@ class Bot:
             return {}
 
     def emoji(self, slot: str, premium: bool = True) -> str:
-        """HTML for one emoji: the owner's Premium emoji when set, the plain one otherwise."""
-        plain = EMOJI_SLOTS[slot]
-        cid = self.custom.get(slot) if premium else None
-        return f'<tg-emoji emoji-id="{html.escape(cid)}">{plain}</tg-emoji>' if cid else plain
+        """HTML for one emoji: a fixed one of the pack, or the owner's own Premium emoji when set; plain otherwise."""
+        if slot in PACK_EMOJI:
+            plain, cid = PACK_EMOJI[slot]
+        else:
+            plain, cid = EMOJI_SLOTS[slot], self.custom.get(slot)
+        return f'<tg-emoji emoji-id="{html.escape(cid)}">{plain}</tg-emoji>' if cid and premium else plain
 
-    async def send_rich(self, chat_id, build):
+    async def send_rich(self, chat_id, build, **extra):
         """build(emoji) -> HTML text. If Telegram refuses the Premium emoji, send the plain version."""
         try:
-            return await self.call("sendMessage", chat_id=chat_id, text=build(self.emoji), parse_mode="HTML")
+            return await self.call("sendMessage", chat_id=chat_id, text=build(self.emoji), parse_mode="HTML", **extra)
         except RuntimeError as e:
-            if not self.custom:
-                raise
             log.warning("premium emoji refused (%s), sending plain emoji", e)
-            return await self.call("sendMessage", chat_id=chat_id, parse_mode="HTML",
+            return await self.call("sendMessage", chat_id=chat_id, parse_mode="HTML", **extra,
                                    text=build(lambda slot: self.emoji(slot, premium=False)))
 
     async def set_custom_emoji(self, msg):
@@ -183,7 +190,7 @@ class Bot:
             await self.call("sendMessage", chat_id=chat,
                             text="Приложение сейчас не запущено. Попробуйте позже.")
             return
-        sent = await self.call("sendMessage", chat_id=chat, text=GREETING, reply_markup=self.open_button())
+        sent = await self.send_rich(chat, greeting_html, reply_markup=self.open_button())
         if self.on_open_button:
             self.on_open_button(chat, sent["message_id"])
 

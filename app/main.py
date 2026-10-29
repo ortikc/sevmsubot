@@ -55,9 +55,11 @@ LOGIN_MINUTES = 10           # a sign-in through the bot must be confirmed withi
 LOGINS_MAX = 200             # sign-ins waiting at once, so nobody can fill the table
 DEVICE_IDLE_DAYS = 180       # a device that has not opened the app for half a year is signed out
 INSTALL_LINK_HOURS = 24      # the «Скачать» button under the bot's offer works once, for a day
-APP_OFFER = ("Поставьте «Расписание» на главный экран телефона: пары, статистика и друзья будут открываться "
-             "даже без интернета.\n\nНажмите «Скачать»: откроется браузер, вход уже будет выполнен, а стрелки "
-             "и подсказки покажут, куда нажать.")
+def _app_offer_html(e) -> str:
+    """The bot's offer of the app for the phone, with the Premium emoji of the bot's pack."""
+    return (f"{e('phone')} Поставьте «Расписание» на главный экран телефона: пары, статистика и друзья будут "
+            f"открываться даже без интернета.\n\n{e('down')} Нажмите «Скачать»: откроется браузер, вход уже будет "
+            "выполнен, а стрелки и подсказки покажут, куда нажать.")
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
@@ -2104,7 +2106,7 @@ async def _offer_app(tg_id: int, again: bool = False):
         token = secrets.token_urlsafe(24)
         conn.execute("INSERT INTO install_links(token_hash, tg_id) VALUES(?, ?)", (_hash(token), tg_id))
     try:
-        sent = await bot.call("sendMessage", chat_id=tg_id, text=APP_OFFER, reply_markup={"inline_keyboard": [[
+        sent = await bot.send_rich(tg_id, _app_offer_html, reply_markup={"inline_keyboard": [[
             {"text": "Скачать", "url": f"{bot.webapp_url}/install/{token}"},
             {"text": "Нет, не надо", "callback_data": "app:no"}]]})
     except Exception as e:
