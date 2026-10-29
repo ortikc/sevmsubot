@@ -493,14 +493,24 @@ function syncMiniHead() {
   const under = r ? bar - r.top - Math.max(0, bar - (r.top + scrollY)) : 0;
   const p = r ? Math.min(1, Math.max(0, under / Math.max(1, r.height))) : 0;
   miniHead.style.setProperty("--p", p.toFixed(3));
+  miniHead.classList.toggle("shown", p > 0);
   miniHead.classList.toggle("on", p > 0.6);
   if (bigTitle) {
     bigTitle.style.opacity = p ? String(1 - 0.85 * p) : "";
     bigTitle.style.transform = p ? `scale(${1 - 0.06 * p})` : "";
   }
 }
-// a new screen brings a new big title
-new MutationObserver(() => { bigTitle = null; requestAnimationFrame(syncMiniHead); }).observe(app, { childList: true, subtree: true });
+// endless little loops (the running pair's pulse and sheen, the empty states' waves and flag) rest while their card
+// is off the screen (.loop.off) or under a sheet (app.css)
+const loopWatch = "IntersectionObserver" in window
+  ? new IntersectionObserver((seen) => seen.forEach((e) => e.target.classList.toggle("off", !e.isIntersecting))) : null;
+function watchLoops() {
+  if (!loopWatch) return;
+  loopWatch.disconnect();   // the cards of the screen before are gone: only today's are watched
+  app.querySelectorAll(".loop").forEach((el) => loopWatch.observe(el));
+}
+// a new screen brings a new big title, and maybe new loops
+new MutationObserver(() => { bigTitle = null; requestAnimationFrame(() => { syncMiniHead(); watchLoops(); }); }).observe(app, { childList: true, subtree: true });
 function placeTabs() {
   tabbarTabs.place();
   if (profileTabs?.root.isConnected) profileTabs.place();
@@ -1420,7 +1430,7 @@ function renderDay({ dir = 0, animateDay = false } = {}) {
     const status = `<p class="status num" id="lead-status"><i class="dot ${nxt.running ? "" : "later"}"></i><span>${statusText(nxt)}</span></p>`;
     const progress = nxt.running ? `<div class="lead-progress" aria-hidden="true"><i id="lead-bar" style="width:${progressOf(nxt, nowPrecise())}%"></i></div>` : "";
     lead = `
-      <article class="lead-card pressable rise" style="${hueVar(l.subject)};--i:1" data-date="${iso}" data-pair="${leadSlot.pair}" data-idx="0" role="button" tabindex="0">
+      <article class="lead-card pressable rise loop" style="${hueVar(l.subject)};--i:1" data-date="${iso}" data-pair="${leadSlot.pair}" data-idx="0" role="button" tabindex="0">
         ${markSvg(l.subject, "mark lead-mark")}
         <h2>${esc(l.subject)}</h2>
         <p class="who">${esc([kindName(l.kind), l.teacher].filter(Boolean).join(" · "))}</p>
@@ -2065,16 +2075,21 @@ function morph(card, update, open) {
     (open ? sheetPanel : card).style.viewTransitionName = "pair-card";
     card.classList.toggle("lifted", open);
   });
-  // the box clips what it shows with its own corners (clip-path: it holds wherever overflow on the box does not)
+  // the box clips what it shows with its own corners (clip-path: it holds wherever overflow on the box does not);
+  // the screen's picture, the page in it, steps back or forward by the page's scale under a sheet (#app, 0.95)
   const box = (r) => `inset(0 round ${r})`;
-  let corners = null;
+  const timing = { duration: 460, easing: "cubic-bezier(0.32, 0.72, 0, 1)", fill: "both" };
+  let anims = [];
   t.ready.then(() => {
-    corners = root.animate({ clipPath: open ? [box(cardR), box(panelR)] : [box(panelR), box(cardR)] }, {
-      duration: 460, easing: "cubic-bezier(0.32, 0.72, 0, 1)", fill: "both", pseudoElement: "::view-transition-group(pair-card)",
-    });
+    anims = [
+      root.animate({ clipPath: open ? [box(cardR), box(panelR)] : [box(panelR), box(cardR)] },
+        { ...timing, pseudoElement: "::view-transition-group(pair-card)" }),
+      root.animate({ transform: open ? [`scale(${1 / 0.95})`, "none"] : ["scale(0.95)", "none"] },
+        { ...timing, pseudoElement: "::view-transition-new(root)" }),
+    ];
   }).catch(() => {});
   t.finished.finally(() => {
-    corners?.cancel();   // it outlives the box otherwise, and would steer the next morph
+    anims.forEach((a) => a.cancel());   // they outlive their pictures otherwise, and would steer the next morph
     root.classList.remove("vt-morph");
     card.style.viewTransitionName = "";
     sheetPanel.style.viewTransitionName = "";
@@ -2303,7 +2318,7 @@ const ART = {
   free: '<circle class="hi a-sun" cx="60" cy="32" r="11"/><path class="hi a-rays" d="M60 10V5M37 32h-5M88 32h-5M44 16l-3.5-3.5M76 16l3.5-3.5"/><path class="a-wave" d="M18 52c5-4 10-4 15 0s10 4 15 0 10-4 15 0 10 4 15 0 10-4 15 0 10 4 15 0"/><path class="a-wave w2" d="M28 62c5-4 10-4 15 0s10 4 15 0 10-4 15 0 10 4 15 0 10-4 15 0"/>',
 };
 const emptyState = (art, title, text) => `
-  <div class="empty-state">
+  <div class="empty-state loop">
     <svg class="art" viewBox="0 0 120 72" aria-hidden="true">${ART[art]}</svg>
     <strong>${title}</strong><p>${text}</p>
   </div>`;
@@ -4511,14 +4526,34 @@ function playLaunchIntro() {
   const w = innerWidth, h = innerHeight;
   canvas.width = w * dpr; canvas.height = h * dpr;
   ctx.scale(dpr, dpr);
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
 
   const pick = (str) => str[Math.floor(Math.random() * str.length)];
   const drops = Array.from({ length: Math.round((w * h) / 2600) }, () => ({
     ch: pick(MATH_SYMBOLS), x: Math.random() * w, y: Math.random() * h,
     v: h * (0.22 + Math.random() * 0.45), // px per second
   }));
+  // each symbol is set in type once, dim and lit (with its glow), as a little picture; a frame only copies
+  // pictures, which a phone does far faster than setting 120 italic glyphs and their glow every frame
+  const sprites = new Map();
+  const sprite = (ch, on) => {
+    const key = (on ? "+" : "-") + ch;
+    if (!sprites.has(key)) {
+      const size = on ? 30 : 24, side = size * 2 + (on ? 28 : 4);
+      const c = document.createElement("canvas");
+      c.width = c.height = Math.ceil(side * dpr);
+      const g = c.getContext("2d");
+      g.scale(dpr, dpr);
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.font = `italic ${size}px "Cambria Math", "STIX Two Math", "Times New Roman", serif`;
+      g.globalAlpha = on ? 1 : 0.38;
+      g.fillStyle = on ? accent : faint;
+      if (on) { g.shadowColor = accent; g.shadowBlur = 14; }
+      g.fillText(ch, side / 2, side / 2);
+      sprites.set(key, { c, half: side / 2 });
+    }
+    return sprites.get(key);
+  };
   let lit = new Set();
   let lastFlicker = 0, last = performance.now(), raf = 0, done = false;
   const draw = (time) => {
@@ -4532,13 +4567,8 @@ function playLaunchIntro() {
     drops.forEach((d, i) => {
       d.y += d.v * dt;
       if (d.y > h + 24) { d.y = -24; d.x = Math.random() * w; d.ch = pick(MATH_SYMBOLS); }
-      const on = lit.has(i);
-      ctx.font = `italic ${on ? 30 : 24}px "Cambria Math", "STIX Two Math", "Times New Roman", serif`;
-      ctx.globalAlpha = on ? 1 : 0.38;
-      ctx.fillStyle = on ? accent : faint;
-      ctx.shadowColor = accent;
-      ctx.shadowBlur = on ? 14 : 0;
-      ctx.fillText(d.ch, d.x, d.y);
+      const s = sprite(d.ch, lit.has(i));
+      ctx.drawImage(s.c, d.x - s.half, d.y - s.half, s.half * 2, s.half * 2);
     });
     if (!done) raf = requestAnimationFrame(draw);
   };
@@ -4657,14 +4687,14 @@ setInterval(() => {
   const status = document.getElementById("lead-status");
   if (status && nxt) rollTo(status.querySelector("span"), statusText(nxt));
   const bar = document.getElementById("lead-bar");
-  if (bar && nxt?.running) bar.style.width = `${progressOf(nxt, t)}%`;
+  if (bar && nxt?.running) bar.style.width = `${progressOf(nxt, t).toFixed(2)}%`;   // no transition: see .now-line
   const strip = app.querySelector(".strip");
   const line = app.querySelector(".now-line"), label = app.querySelector(".now-label");
   if (strip && line && label) {
     const from = Number(strip.dataset.from), to = Number(strip.dataset.to);
     const p = ((t.min - from) / (to - from)) * 100;
-    line.style.left = `${p}%`;
-    label.style.left = `${Math.min(94, Math.max(6, p))}%`;
+    line.style.left = `${p.toFixed(2)}%`;
+    label.style.left = `${Math.min(94, Math.max(6, p)).toFixed(2)}%`;
     const text = hm(Math.floor(t.min));
     if (label.textContent !== text) label.textContent = text;
   }

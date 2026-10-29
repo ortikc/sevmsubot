@@ -124,10 +124,14 @@ svg { display: block; }
   height: calc(var(--top-inset) + 46px); padding: var(--top-inset) 64px 0;
   display: grid; place-items: center;
   background: color-mix(in srgb, var(--ground) 74%, transparent);
+  border-bottom: 1px solid var(--rule);
+  opacity: var(--p, 0); pointer-events: none; visibility: hidden;
+}
+/* frosted only while it is shown: a blur under an invisible bar would still be worked out on every frame */
+.mini-head.shown {
+  visibility: visible;
   -webkit-backdrop-filter: blur(18px) saturate(160%); /* taste-skill-ignore: the bar frosts what scrolls under it */
   backdrop-filter: blur(18px) saturate(160%); /* taste-skill-ignore: the bar frosts what scrolls under it */
-  border-bottom: 1px solid var(--rule);
-  opacity: var(--p, 0); pointer-events: none;
 }
 .mini-head.on { pointer-events: auto; cursor: pointer; }
 .mini-head b {
@@ -183,11 +187,12 @@ svg { display: block; }
 .bar.now { top: -2px; height: 14px; border-radius: 4px; }
 .bar-label { position: absolute; top: 18px; font-size: 12px; color: var(--faint); white-space: nowrap; }
 .bar-label.now { color: var(--text); font-weight: 500; }
-.now-line { position: absolute; top: -5px; width: 2px; height: 20px; margin-left: -1px; border-radius: 1px; background: var(--text); transition: left 1s linear; }
+/* the now-line and the running pair's bar creep a hundredth of a pixel a second, set once a second (the live
+   tick in app.js): no transition on left or width, which would re-lay the page out every frame of a pair */
+.now-line { position: absolute; top: -5px; width: 2px; height: 20px; margin-left: -1px; border-radius: 1px; background: var(--text); }
 .now-label {
   position: absolute; top: -24px; transform: translateX(-50%);
   font-size: 11px; font-weight: 600; color: var(--text); white-space: nowrap;
-  transition: left 1s linear;
 }
 
 .slide-next { animation: slide-next 300ms var(--ease) both; }
@@ -218,6 +223,9 @@ svg { display: block; }
 .status { display: flex; align-items: center; gap: 8px; margin-top: 16px; font-size: 14px; color: var(--text); }
 .status .dot { position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--c, var(--accent)); flex: none; }
 .status .dot.later { background: var(--faint); }
+/* endless loops rest where nobody sees them: their card off the screen (watchLoops) or under a sheet */
+/* !important: a loop's own `animation` shorthand (often the more specific rule) would set it running again */
+.loop.off *, .loop.off *::after, html.sheet-open .loop *, html.sheet-open .loop *::after { animation-play-state: paused !important; }
 /* the running pair breathes: a ring leaves its dot every two seconds, a sheen runs along its bar */
 .status .dot:not(.later)::after {
   content: ""; position: absolute; inset: 0; border-radius: 50%; background: inherit;
@@ -226,7 +234,7 @@ svg { display: block; }
 @keyframes live-ping { from { transform: scale(1); opacity: 0.7; } 75%, to { transform: scale(3); opacity: 0; } }
 .also { margin-top: 10px; font-size: 13px; color: var(--muted); }
 .lead-progress { height: 4px; margin-top: 14px; border-radius: 2px; overflow: hidden; background: var(--raised); }
-.lead-progress i { position: relative; display: block; height: 100%; overflow: hidden; border-radius: 2px; background: var(--c, var(--accent)); transition: width 1s linear; }
+.lead-progress i { position: relative; display: block; height: 100%; overflow: hidden; border-radius: 2px; background: var(--c, var(--accent)); }
 .lead-progress i::after {
   content: ""; position: absolute; inset: 0; transform: translateX(-100%);
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
@@ -295,6 +303,10 @@ html.sheet-open .reminded.fresh { animation-play-state: paused; }
   border: 1px solid var(--st-border); border-radius: 999px;
   background: var(--st-bg);
   box-shadow: var(--st-glow); /* taste-skill-ignore: the owner's reference glows */
+}
+/* only the bottom bar is frosted: the day scrolls under it. The switches inside the page sit over the still ground
+   and its halo, where a blur gives the same colour, so they keep the glass's tint and rim without paying for one */
+.tabbar.slide-tabs {
   -webkit-backdrop-filter: blur(20px) saturate(150%); /* taste-skill-ignore: glass is in the owner's reference */
   backdrop-filter: blur(20px) saturate(150%); /* taste-skill-ignore: glass is in the owner's reference */
 }
@@ -386,8 +398,6 @@ html.sheet-open .reminded.fresh { animation-play-state: paused; }
   position: relative; flex: none; display: grid; place-items: center; width: 52px; height: 52px; border-radius: 50%;
   border: 1px solid var(--st-border); background: var(--st-bg); color: var(--text);
   box-shadow: var(--st-glow); /* taste-skill-ignore: matches the glass switch beside it */
-  -webkit-backdrop-filter: blur(20px) saturate(150%); /* taste-skill-ignore: matches the glass switch beside it */
-  backdrop-filter: blur(20px) saturate(150%); /* taste-skill-ignore: matches the glass switch beside it */
   transition: transform 150ms var(--ease);
 }
 .bell:active { transform: scale(0.94); }
@@ -1209,7 +1219,10 @@ html.sheet-dragging #app { transition: none; }
 /* a pair's card grows into its sheet (view transition, app.js morph): the card's place stays empty meanwhile */
 .lifted { opacity: 0; transition: none; }
 html.vt-morph #app, html.vt-morph .pressable { transition: none; }
-html.vt-morph #app { view-transition-name: page; }
+/* the page is not a snapshot of its own (a long page makes a big picture to take on every tap): it stays in the
+   root's picture, which is only the screen, and that picture steps back as the page does (morph() animates it) */
+html.vt-morph::view-transition-old(root) { animation: none; opacity: 0; }
+html.vt-morph::view-transition-new(root) { animation: none; }
 html.vt-morph .tabbar { view-transition-name: tabbar; }
 html.vt-morph .mini-head { view-transition-name: mini-head; }
 html.vt-morph .sheet-scrim { view-transition-name: scrim; transition: none; }
