@@ -4457,6 +4457,7 @@ let SEMESTER = { start: "2026-09-01", session: "2027-01-03" };   // the admin pa
 
 /* ---------- what the admin sets without a deploy: the semester's dates and a banner over the app ---------- */
 const CONFIG_KEY = "msu.config", BANNER_KEY = "msu.banner.closed";
+const CONFIG_WAIT_MS = 4000;
 function applyConfig(cfg) {
   if (!cfg) return;
   if (cfg.semester?.start && cfg.semester?.session) SEMESTER = { start: cfg.semester.start, session: cfg.semester.session };
@@ -4466,14 +4467,19 @@ async function loadConfig() {
   let cfg = null;
   try { cfg = JSON.parse(localStorage.getItem(CONFIG_KEY) || "null"); } catch (_) {}
   applyConfig(cfg);   // the last one known first: offline, or before the answer
-  try {
-    const res = await fetch("/api/config");
-    if (res.ok) {
-      cfg = await res.json();
-      try { localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg)); } catch (_) {}
-      applyConfig(cfg);
-    }
-  } catch (_) {}
+  const fresh = (async () => {
+    try {
+      const res = await fetch("/api/config");
+      if (res.ok) {
+        const got = await res.json();
+        try { localStorage.setItem(CONFIG_KEY, JSON.stringify(got)); } catch (_) {}
+        applyConfig(got);
+      }
+    } catch (_) {}
+  })();
+  // a network that is up but carries nothing never answers: the launch must not wait on it.
+  // With a known config the answer only refreshes it; the very first launch waits a little for the dates
+  if (!cfg) await Promise.race([fresh, new Promise((r) => setTimeout(r, CONFIG_WAIT_MS))]);
 }
 function showBanner(text) {
   let closed = "";

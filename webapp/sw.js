@@ -49,17 +49,32 @@ async function fromShell(path) {
   return hit || fetch(path);
 }
 
+// once the network has failed or stalled, the next reads answer from the saved copy at once instead of each
+// waiting SLOW_MS of its own (a launch makes a dozen of them); any answer from the network ends this
+const DOWN_MS = 20000;
+let downUntil = 0;
+
 async function networkFirst(req) {
   const cache = await caches.open(DATA);
-  try {
-    const res = await Promise.race([fetch(req), new Promise((_, fail) => setTimeout(() => fail(new Error("slow")), SLOW_MS))]);
+  const live = fetch(req).then(async (res) => {
+    downUntil = 0;
     if (res.ok) {
       const headers = new Headers(res.headers);
       headers.set("X-Saved-At", new Date().toISOString());
       await cache.put(req, new Response(await res.clone().blob(), { status: res.status, headers }));
     }
     return res;
+  });
+  live.catch(() => { downUntil = Date.now() + DOWN_MS; });
+  if (Date.now() < downUntil) {
+    const hit = await cache.match(req);
+    if (hit) return hit;
+    throw new Error("offline");
+  }
+  try {
+    return await Promise.race([live, new Promise((_, fail) => setTimeout(() => fail(new Error("slow")), SLOW_MS))]);
   } catch (err) {
+    downUntil = Date.now() + DOWN_MS;
     const hit = await cache.match(req);
     if (hit) return hit;
     throw err;
