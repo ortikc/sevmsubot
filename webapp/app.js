@@ -586,6 +586,16 @@ const DEV_HOSTS = ["localhost", "127.0.0.1"];   // python run.py --local: no wor
 function registerWorker() {
   if (!("serviceWorker" in navigator) || DEV_HOSTS.includes(location.hostname)) return;
   navigator.serviceWorker.register("/sw.js").catch(() => {});
+  // a new version took over from the old one: start it now, so one launch with the internet is enough to have it
+  // offline. While the app is still opening that goes unnoticed; later, the next time it is out of sight
+  const hadOld = Boolean(navigator.serviceWorker.controller);
+  let pending = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadOld || pending) return;
+    pending = true;
+    if (performance.now() < 15000 || document.visibilityState === "hidden") location.reload();
+    else addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") location.reload(); });
+  });
 }
 
 // with no network the worker answers from its saved copy and marks the answer with X-Saved-At
@@ -4251,7 +4261,7 @@ async function openFriendSheet(p) {
 /* ---------- settings ---------- */
 
 const DEVELOPER = "ortikc";
-const APP_VERSION = "1.2";
+const APP_VERSION = "1.8.4";
 const VIEW_KEY = "msu.view";
 
 function viewPref() {
