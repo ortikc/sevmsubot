@@ -1,5 +1,21 @@
+# secrets: bot tokens and the rest live only in .env on the server and the PC, never in git
 .env
+.env.*
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+*.p12
+secrets*/
+
+# students' data: the database, its backups, logs, avatars and post photos
 data/
+*.sqlite3
+*.sqlite3-*
+*.db
+*.log
+backups/
+
 bin/
 __pycache__/
 *.pyc
@@ -14,3 +30,12 @@ videos/*/.hyperframes/
 videos/*/assets/*.png
 videos/*/.thumbnails/
 videos/*/.waveform-cache/
+
+# local only: drafts, old versions, tooling
+/archive/
+/intros/
+/plan-korpusa.html
+node_modules/
+.claude/
+.vscode/
+.idea/
